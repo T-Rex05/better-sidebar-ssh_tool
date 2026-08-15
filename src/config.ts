@@ -82,7 +82,8 @@ export function resolveSidebarConfig(config: SidebarConfig | undefined): Resolve
 
 /** Schemastery schema for the user-facing preferences (validated by the settings service). */
 export const PrefsSchema: z<SidebarPrefs> = z.object({
-  openByDefault: z.boolean().default(true),
+  // DSH-AGENT-PATCH (2026-08-16): 用户要求切会话时不要自动展开右侧面板，默认改为折叠（与客户端默认一致）。
+  openByDefault: z.boolean().default(false),
   defaultWidthPercent: z.number().step(1).min(WIDTH_PERCENT_MIN).max(WIDTH_PERCENT_MAX).default(WIDTH_PERCENT_DEFAULT),
   autoOpenSubagent: z.boolean().default(true),
   autoOpenJobs: z.boolean().default(true),

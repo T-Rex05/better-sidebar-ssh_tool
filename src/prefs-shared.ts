@@ -132,7 +132,8 @@ export const TERMINAL_FONT_SIZE_DEFAULT = 13
 
 /** Fallback prefs used whenever the settings document is unreachable or malformed. */
 export const SIDEBAR_PREFS_DEFAULTS: SidebarPrefs = {
-  openByDefault: true,
+  // DSH-AGENT-PATCH (2026-08-16): 用户要求切会话时不要自动展开右侧面板/文件树（避免挤压窗口触发左侧栏折叠），默认改为折叠。
+  openByDefault: false,
   defaultWidthPercent: WIDTH_PERCENT_DEFAULT,
   autoOpenSubagent: true,
   autoOpenJobs: true,
