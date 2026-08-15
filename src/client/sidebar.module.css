@@ -583,6 +583,42 @@
   color: var(--dsw-alias-label-primary);
 }
 
+/* The strip's explicit split cluster (split-right then split-down), pinned
+   flush LEFT of the + menu: pushed to the row's right end by the auto
+   margin, and sticky so overflowing tab rows keep it reachable (the +
+   occupies 34px including its margins — `right: 34px` parks the cluster
+   exactly beside it). */
+.tabSplitActions {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  padding: 0 4px;
+  position: sticky;
+  right: 34px;
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.tabSplitButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.tabSplitButton:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
 /* ── Explorer ──────────────────────────────────────────────────────────── */
 
 .explorer {
@@ -705,6 +741,239 @@
   font: var(--dsw-font-xxs-12);
   color: var(--dsw-alias-label-tertiary);
   text-align: center;
+}
+
+/* ── Remote SSH (server list / tree) ──────────────────────────────────── */
+
+/* The remote explorer root: same fill-the-pane column as the local one. */
+.remote {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.remoteBody {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 6px 8px;
+}
+
+/* One server block: the connection status row plus the lazy tree below. */
+.remoteServer {
+  margin-bottom: 2px;
+}
+
+.remoteServerRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 34px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font: var(--dsw-font-s-14);
+  color: var(--dsw-alias-label-primary);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.remoteServerRow:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.remoteServerSelected {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* Connection status dot (left of the folder glyph): idle = tertiary,
+   connecting = warn, connected = success, error = error. */
+.remoteStatus {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dsw-alias-label-tertiary);
+}
+
+.remoteStatusConnecting {
+  background: var(--dsw-alias-state-warn-primary);
+}
+
+.remoteStatusConnected {
+  background: var(--dsw-alias-state-success-primary);
+}
+
+.remoteStatusError {
+  background: var(--dsw-alias-state-error-primary);
+}
+
+/* user@host caption; flex: 1 so the edit button stays at the row's end. */
+.remoteServerHost {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font: var(--dsw-font-xxxs-11);
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* The empty-state "add server" button. */
+.remoteAddButton {
+  margin-top: 8px;
+  padding: 4px 12px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxs-12);
+  cursor: pointer;
+}
+
+.remoteAddButton:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+/* ── Remote server form (add / edit modal) ────────────────────────────── */
+
+.remoteFormModal {
+  width: 420px;
+  max-width: calc(100vw - 32px);
+}
+
+.remoteForm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.remoteFormRow {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.remoteFormLabel {
+  font: var(--dsw-font-xxs-strong-12);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.remoteAuthSelect {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-s-14);
+}
+
+.remoteFormActions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.remoteFormNote {
+  font: var(--dsw-font-xxs-12);
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* ── Remote terminal (center view + dock) ─────────────────────────────── */
+
+/* The toolbar row above the xterm banner of a DOCKED remote terminal (the
+   undock + close buttons); the local terminal has no toolbar. */
+.remoteTerminalToolbar {
+  flex: none;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.remoteTerminalToolbarInner {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 2px 8px;
+}
+
+/* The center (conversation.view) surface of one remote terminal: header
+   (title + 分栏/关闭) above the lazy xterm body. */
+.remoteCenter {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.remoteCenterHeader {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.remoteCenterTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--dsw-font-xxs-strong-12);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.remoteCenterActions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.remoteCenterButton {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxxs-strong-11);
+  cursor: pointer;
+}
+
+.remoteCenterButton:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+/* The 分栏 action in the session header (beside the title): a compact pill
+   that docks the latest terminal or collapses the dock. */
+.remoteDockAction {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxxs-strong-11);
+  cursor: pointer;
+}
+
+.remoteDockAction:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
 }
 
 /* ── Editor ────────────────────────────────────────────────────────────── */
@@ -1739,9 +2008,15 @@
 .tab:focus-visible,
 .tabClose:focus-visible,
 .tabBarPlus:focus-visible,
+.tabSplitButton:focus-visible,
 .paneCard:focus-visible,
 .explorerRow:focus-visible,
 .explorerRef:focus-visible,
+.remoteServerRow:focus-visible,
+.remoteAddButton:focus-visible,
+.remoteAuthSelect:focus-visible,
+.remoteCenterButton:focus-visible,
+.remoteDockAction:focus-visible,
 .gitRowMain:focus-visible,
 .gitLink:focus-visible,
 .gitCommitButton:focus-visible,

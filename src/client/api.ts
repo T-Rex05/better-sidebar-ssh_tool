@@ -54,6 +54,65 @@ export interface GitLogEntry {
   refs: string
 }
 
+/** Remote server auth method. */
+export type RemoteAuthType = 'password' | 'privateKey'
+
+/** One remote server as the host returns it (secrets masked). */
+export interface RemoteServerSafe {
+  id: string
+  name: string
+  host: string
+  port: number
+  username: string
+  authType: RemoteAuthType
+  /** True when a password is stored (the value itself never crosses the wire). */
+  hasPassword: boolean
+  /** True when a key passphrase is stored. */
+  hasPassphrase: boolean
+  privateKeyPath?: string
+  rootPath?: string
+}
+
+/** One remote server as the form submits it (save/test). */
+export interface RemoteServerInput {
+  id?: string
+  name: string
+  host: string
+  port: number
+  username: string
+  authType: RemoteAuthType
+  /** Empty on edit = keep the stored password. */
+  password?: string
+  privateKeyPath?: string
+  /** Empty on edit = keep the stored passphrase. */
+  passphrase?: string
+  rootPath?: string
+}
+
+/** One remote directory row. */
+export interface RemoteFsEntry {
+  name: string
+  /** Absolute POSIX path. */
+  path: string
+  isDir: boolean
+  /** Symlinks are treated as files (never followed). */
+  isLink: boolean
+  size: number
+  hidden: boolean
+}
+
+/** One listed remote level. */
+export interface RemoteFsListing {
+  path: string
+  entries: RemoteFsEntry[]
+  truncated: boolean
+}
+
+/** Remote file read result (mirror of the host shape). */
+export type RemoteFileRead =
+  | { kind: 'text'; content: string; truncated: boolean }
+  | { kind: 'binary'; size: number; truncated: boolean; head: string }
+
 /** Text read result. */
 export interface FsTextResult { kind: 'text'; content: string; truncated: boolean }
 /** Binary read result (no content; images load through the media route).
@@ -186,6 +245,37 @@ export const api = {
    *  check; see the host's browser.probe route). */
   browserProbe: (url: string, signal?: AbortSignal) =>
     call<BrowserProbeResult>('browser.probe', { url }, signal),
+  // ── Remote SSH API (server list / SFTP explorer / remote shells) ────────
+  /** The configured remote servers (masked: no secrets cross the wire). */
+  remoteServers: (signal?: AbortSignal) =>
+    call<{ servers: RemoteServerSafe[] }>('remote.servers', {}, signal),
+  /** Save (upsert) one server; empty password/passphrase keeps the stored one. */
+  remoteSaveServer: (server: RemoteServerInput) =>
+    call<{ servers: RemoteServerSafe[]; saved: RemoteServerSafe }>('remote.servers.save', server as unknown as Record<string, unknown>),
+  /** Delete one server by id (its pooled connection closes too). */
+  remoteDeleteServer: (id: string) =>
+    call<{ servers: RemoteServerSafe[] }>('remote.servers.delete', { id }),
+  /** Test one (possibly unsaved) server record on a short-lived connection. */
+  remoteTest: (server: RemoteServerInput) =>
+    call<{ home: string }>('remote.servers.test', server as unknown as Record<string, unknown>),
+  /** List one remote directory level. */
+  remoteFsTree: (serverId: string, path?: string, signal?: AbortSignal) =>
+    call<RemoteFsListing>('remote.fs.tree', { serverId, ...(path !== undefined ? { path } : {}) }, signal),
+  /** Read one remote file (capped; binaries carry head bytes for sniffing). */
+  remoteFsRead: (serverId: string, path: string, signal?: AbortSignal) =>
+    call<RemoteFileRead>('remote.fs.read', { serverId, path }, signal),
+  /** Write one remote file (temp + rename on the server). */
+  remoteFsWrite: (serverId: string, path: string, content: string) =>
+    call<{ ok: true }>('remote.fs.write', { serverId, path, content }),
+  /** Rename one remote entry (same directory; name without slashes). */
+  remoteFsRename: (serverId: string, path: string, name: string) =>
+    call<{ ok: true }>('remote.fs.rename', { serverId, path, name }),
+  /** Delete one remote entry (directories recurse children-first). */
+  remoteFsDelete: (serverId: string, path: string) =>
+    call<{ ok: true }>('remote.fs.delete', { serverId, path }),
+  /** Release one remote shell immediately (tab closed while WS was down). */
+  remoteShellClose: (scope: SessionScope, tabId: string) =>
+    call<{ ok: true }>('remote.shell.close', scopePayload(scope, { tab: tabId })),
 }
 
 /** Absolute URL of the media route for one path (images only). */
@@ -197,6 +287,13 @@ export function mediaUrl(scope: SessionScope, path: string): string {
  *  `Content-Disposition: attachment`, so the browser saves the file. */
 export function downloadUrl(scope: SessionScope, path: string): string {
   return fileUrl(scope, path, true)
+}
+
+/** Absolute URL of the remote file route (inline preview or download). */
+export function remoteFileUrl(serverId: string, path: string, download: boolean): string {
+  const params = new URLSearchParams({ serverId, path })
+  if (download) params.set('download', '1')
+  return `/sidebar/remote-file?${params.toString()}`
 }
 
 /** Shared URL builder for the /sidebar/file route (media vs download). */

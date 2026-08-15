@@ -168,7 +168,7 @@ export interface TabDescriptor {
    * mint `terminal:<n>` ids and bump `nextTerminal`.
    * When omitted, a default `{ id, type, title }` tab is created.
    */
-  createTab?: (state: SidebarState) => { tab: SidebarTab; patch?: Partial<SidebarState> } | null
+  createTab?: (state: SidebarState, seed: OpenTabSeed) => { tab: SidebarTab; patch?: Partial<SidebarState> } | null
   /**
    * Declarative settings shown in the Side card settings page: every
    * registered tab gets an enable/disable switch (icon + title + id), and
@@ -224,6 +224,15 @@ export interface FileViewerProps {
   mediaUrl?: string
   /** custom load() return value (fetchStrategy='custom'). */
   customData?: unknown
+  /**
+   * Write-back hook (v0.12.1+remote): when present the editable viewer's
+   * save/sync button writes through it instead of the local api.fsWrite —
+   * the remote editor passes a remote.fs.write closure here.
+   */
+  writeFile?: (content: string) => Promise<unknown>
+  /** True when the file lives on a remote server (the html preview mode
+   *  is disabled then — its iframe route only serves local files). */
+  remote?: boolean
 }
 
 /** Describes one file previewer (builtins register themselves too). */
@@ -400,6 +409,7 @@ export const SIDEBAR_FEATURES = [
   'stateSubscription',
   'tabMeta',
   'pluginSettings',
+  'remote',
 ] as const
 
 /** Run one plugin callback; a throw is logged and never breaks the caller. */
@@ -526,7 +536,7 @@ export function createBetterSidebarService(store: SidebarStore): BetterSidebarSe
       let tab: SidebarTab
       let next: SidebarState
       if (descriptor.createTab !== undefined) {
-        const result = descriptor.createTab(state)
+        const result = descriptor.createTab(state, seed)
         if (result === null) return state
         tab = result.tab
         next = applyDedupe(state, result.tab, descriptor)

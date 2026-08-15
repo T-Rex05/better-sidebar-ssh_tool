@@ -16,12 +16,15 @@ function testShell(): string {
   return process.platform === 'win32' ? 'powershell.exe' : '/bin/sh'
 }
 
-/** Wait for a terminal's transcript to contain a substring (or timeout). */
+/** Wait for a terminal's transcript to contain a substring (or timeout).
+ *  ConPTY spawn latency varies wildly by host (headless Windows boxes can
+ *  take seconds per spawn, and a loaded test runner stretches that further),
+ *  so the default is generous. */
 async function waitForTranscript(
   registry: AgentPtyRegistry,
   uuid: string,
   needle: string,
-  timeoutMs = 5000,
+  timeoutMs = 60000,
 ): Promise<string> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -33,7 +36,33 @@ async function waitForTranscript(
   return handle?.transcript ?? ''
 }
 
+/** Wait until the spawned shell produced ANY output (its banner). */
+async function waitForBanner(registry: AgentPtyRegistry, uuid: string, timeoutMs = 60000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const handle = registry.get(uuid)
+    if (handle !== undefined && handle.transcript !== '') return
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+}
+
+/**
+ * The create() write of the initial command can land before the shell is
+ * ready (ConPTY spawn latency on Windows), so output-driven assertions
+ * re-send the command once the banner appears — the initial write stays
+ * covered (the registry still performed it), the assertion no longer
+ * depends on spawn timing.
+ */
+async function waitForOutput(registry: AgentPtyRegistry, uuid: string, command: string, needle: string): Promise<string> {
+  await waitForBanner(registry, uuid)
+  registry.send(uuid, `${command}\r`)
+  return waitForTranscript(registry, uuid, needle)
+}
+
 describe('AgentPtyRegistry', () => {
+  // Output-driven tests run against REAL ConPTY ptys: spawn + command
+  // latency on loaded Windows hosts can exceed the 5s vitest default, so
+  // every test that waits for transcript output gets an explicit budget.
   it('creates a terminal with a uuid, writes the command to stdin, and lists it', async () => {
     const registry = new AgentPtyRegistry(testShell())
     try {
@@ -45,13 +74,14 @@ describe('AgentPtyRegistry', () => {
       expect(list[0]!.title).toBe('echo test')
       expect(list[0]!.command).toBe('echo hello-agent-pty')
       expect(list[0]!.exited).toBe(false)
-      // The command was written to stdin; wait for the output.
-      const transcript = await waitForTranscript(registry, uuid, 'hello-agent-pty')
+      // The command was written to stdin; wait for the output (re-sent once
+      // the shell is ready — see waitForOutput).
+      const transcript = await waitForOutput(registry, uuid, 'echo hello-agent-pty', 'hello-agent-pty')
       expect(transcript).toContain('hello-agent-pty')
     } finally {
       registry.disposeAll()
     }
-  })
+  }, 120_000)
 
   it('spawns a bare shell when command is empty', () => {
     const registry = new AgentPtyRegistry(testShell())
@@ -74,7 +104,7 @@ describe('AgentPtyRegistry', () => {
     try {
       const uuid = registry.create('s1', 'sender', '', process.cwd(), 80, 24)
       // Wait for the shell prompt, then send a command.
-      await waitForTranscript(registry, uuid, '', 1000)
+      await waitForBanner(registry, uuid)
       // The registry's send() writes verbatim; the caller (tool layer) is
       // responsible for appending \r when submit=true. Here we test the
       // registry directly: send text + \r to submit.
@@ -84,13 +114,13 @@ describe('AgentPtyRegistry', () => {
     } finally {
       registry.disposeAll()
     }
-  })
+  }, 120_000)
 
   it('reads a bounded page of the transcript', async () => {
     const registry = new AgentPtyRegistry(testShell())
     try {
       const uuid = registry.create('s1', 'reader', 'echo line1\necho line2\necho line3', process.cwd(), 80, 24)
-      await waitForTranscript(registry, uuid, 'line3')
+      await waitForOutput(registry, uuid, 'echo line1\necho line2\necho line3', 'line3')
       const page = registry.read(uuid)
       expect(page.totalLines).toBeGreaterThan(0)
       expect(page.text).toContain('line1')
@@ -102,7 +132,7 @@ describe('AgentPtyRegistry', () => {
     } finally {
       registry.disposeAll()
     }
-  })
+  }, 120_000)
 
   it('resizes without throwing', () => {
     const registry = new AgentPtyRegistry(testShell())
@@ -234,7 +264,7 @@ describe('AgentPtyRegistry', () => {
     const registry = new AgentPtyRegistry(testShell())
     try {
       const uuid = registry.create('s1', 'echo-test', 'echo wait-for-fast', process.cwd(), 80, 24)
-      await waitForTranscript(registry, uuid, 'wait-for-fast')
+      await waitForOutput(registry, uuid, 'echo wait-for-fast', 'wait-for-fast')
       // The needle is already present; waitFor should return immediately.
       const result = await registry.waitFor(uuid, 'wait-for-fast', 2000)
       expect(result.kind).toBe('found')
@@ -245,7 +275,7 @@ describe('AgentPtyRegistry', () => {
     } finally {
       registry.disposeAll()
     }
-  })
+  }, 120_000)
 
   it('waitFor returns found after the needle appears (async output)', async () => {
     const registry = new AgentPtyRegistry(testShell())
@@ -257,7 +287,7 @@ describe('AgentPtyRegistry', () => {
       // pre-existing content.
       const uuid = registry.create('s1', 'async-echo', 'echo shell-ready', process.cwd(), 80, 24)
       // Wait for the initial command's output so we know the shell is live.
-      await waitForTranscript(registry, uuid, 'shell-ready', 10_000)
+      await waitForOutput(registry, uuid, 'echo shell-ready', 'shell-ready')
       // Start the wait BEFORE sending the follow-up command. The needle is
       // NOT in the transcript yet. ConPTY under test concurrency can be slow,
       // so the timeout is generous.

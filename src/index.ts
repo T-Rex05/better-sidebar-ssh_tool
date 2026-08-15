@@ -40,6 +40,10 @@ import { AgentPtyRegistry, clampDims, type AgentTerminalHandle } from './agent-p
 import { registerTools } from './tools.ts'
 import { buildJobsApi, type SidebarJobsRoutes } from './jobs-routes.ts'
 import { readJsonBody, requireString, SidebarError, writeError, writeJson, writeOk } from './wire.ts'
+import { deleteServer, loadServers, maskServer, saveServer, validateServer } from './remote/config-store.ts'
+import type { RemoteServer } from './remote/types.ts'
+import { SftpPool } from './remote/sftp-pool.ts'
+import { RemoteShellRegistry } from './remote/shell-registry.ts'
 
 export { Config }
 export type { SidebarConfig, ResolvedSidebarConfig }
@@ -124,6 +128,9 @@ async function resolveGitPath(cwd: string, raw: string): Promise<string> {
 /** How many leading bytes a binary read returns for client-side detect sniffing. */
 const READ_HEAD_LIMIT = 4096
 
+/** Hard cap of a remote file download (inline previews stay under mediaLimit). */
+const REMOTE_DOWNLOAD_LIMIT = 512 * 1024 * 1024
+
 /** Text read of a file with the size cap; binary detection via NUL probe.
  *  Binary reads also return the first {@link READ_HEAD_LIMIT} bytes (base64)
  *  so the client can re-match viewers by content (`detect`). */
@@ -176,13 +183,15 @@ export interface SidebarSettingsFace {
   update(patch: Record<string, unknown>, expectedRevision?: number): Promise<{ value?: unknown; revision?: number }>
 }
 
-/** Build the API method table bound to the plugin context, pty manager, agent pty registry, and resolved config. */
+/** Build the API method table bound to the plugin context, pty manager, agent pty registry, remote engines, and resolved config. */
 function buildApi(
   ctx: Context,
   ptyManager: PtyManager,
   agentPtyRegistry: AgentPtyRegistry,
   resolved: ResolvedSidebarConfig,
   getSettings: () => SidebarSettingsFace | undefined,
+  sftpPool: SftpPool,
+  shellRegistry: RemoteShellRegistry,
 ): Record<string, ApiMethod> {
   const cwdOf = (payload: unknown): { sessionId: string; cwd: string } => {
     const sessionId = requireString(payload, 'sessionId')
@@ -196,6 +205,12 @@ function buildApi(
   // job_output cursor is never consumed) and kill (the registry's stock
   // API). A deployment without the jobs registry downgrades kill to a 503.
   const jobsApi: SidebarJobsRoutes = buildJobsApi(ctx, resolved.readLimit)
+  // Reload the persisted server list into the SFTP pool (mount + every save/delete).
+  const syncRemoteServers = async (): Promise<RemoteServer[]> => {
+    const servers = await loadServers()
+    sftpPool.syncServers(servers)
+    return servers
+  }
   return {
     'session.cwd': (payload) => {
       const { sessionId, cwd } = cwdOf(payload)
@@ -411,6 +426,78 @@ function buildApi(
         clearTimeout(timer)
       }
     },
+    // ── Remote SSH: server list, SFTP explorer, remote terminals ────────────
+    // Server records live in the host-side config file (~/.dsh/better-sidebar
+    // -servers.json). The list endpoint returns MASKED rows (hasPassword /
+    // hasPassphrase presence flags — plaintext secrets never cross the wire).
+    'remote.servers': async () => {
+      const servers = await loadServers()
+      return { servers: servers.map(maskServer) }
+    },
+    'remote.servers.save': async (payload) => {
+      const { servers, saved } = await saveServer(payload)
+      sftpPool.syncServers(servers)
+      return { servers: servers.map(maskServer), saved: maskServer(saved) }
+    },
+    'remote.servers.delete': async (payload) => {
+      const id = requireString(payload, 'id')
+      const servers = await deleteServer(id)
+      sftpPool.syncServers(servers)
+      sftpPool.closeServer(id)
+      return { servers: servers.map(maskServer) }
+    },
+    // Test one (possibly unsaved) record on a short-lived connection.
+    'remote.servers.test': async (payload) => {
+      const input = payload as Record<string, unknown> | null
+      const servers = await loadServers()
+      const existing = typeof input?.id === 'string' ? servers.find(s => s.id === input.id) : undefined
+      const candidate = validateServer(input, existing)
+      const { home } = await sftpPool.testConnection(candidate)
+      return { home }
+    },
+    'remote.fs.tree': async (payload) => {
+      const serverId = requireString(payload, 'serverId')
+      const record = payload as { path?: unknown } | null
+      const path = typeof record?.path === 'string' && record.path !== ''
+        ? record.path
+        : (await sftpPool.rootOf(serverId)).root
+      if (!path.startsWith('/')) throw new SidebarError('bad-request', 'remote path must be an absolute POSIX path', 400)
+      return sftpPool.listDir(serverId, path, resolved.listLimit)
+    },
+    'remote.fs.read': async (payload) => {
+      const serverId = requireString(payload, 'serverId')
+      const path = requireString(payload, 'path')
+      if (!path.startsWith('/')) throw new SidebarError('bad-request', 'remote path must be an absolute POSIX path', 400)
+      return sftpPool.readFile(serverId, path, resolved.readLimit)
+    },
+    'remote.fs.write': async (payload) => {
+      const serverId = requireString(payload, 'serverId')
+      const path = requireString(payload, 'path')
+      const content = requireString(payload, 'content')
+      if (!path.startsWith('/')) throw new SidebarError('bad-request', 'remote path must be an absolute POSIX path', 400)
+      await sftpPool.writeFile(serverId, path, content)
+      return { ok: true }
+    },
+    'remote.fs.rename': async (payload) => {
+      const serverId = requireString(payload, 'serverId')
+      const path = requireString(payload, 'path')
+      const name = requireString(payload, 'name')
+      await sftpPool.renameEntry(serverId, path, name)
+      return { ok: true }
+    },
+    'remote.fs.delete': async (payload) => {
+      const serverId = requireString(payload, 'serverId')
+      const path = requireString(payload, 'path')
+      await sftpPool.deleteEntry(serverId, path)
+      return { ok: true }
+    },
+    // Release one remote shell immediately (tab closed while the WS was down).
+    'remote.shell.close': (payload) => {
+      const sessionId = requireString(payload, 'sessionId')
+      const tabId = requireString(payload, 'tab')
+      shellRegistry.close(sessionId + ':' + tabId)
+      return { ok: true }
+    },
   }
 }
 
@@ -438,6 +525,21 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
   // through the terminal_create tool; the sidebar view attaches through the
   // same /sidebar/ws/terminal upgrade with ?uuid=... instead of ?tab=...
   const agentPtyRegistry = new AgentPtyRegistry(defaultShell())
+  // ── Remote SSH engines (SFTP pool + shell registry) ─────────────────────
+  // The pool holds one persistent ssh2 connection per configured server;
+  // remote shells open dedicated clients so they survive pool idle-closes.
+  const sftpPool = new SftpPool({
+    connectTimeoutMs: resolved.remoteConnectTimeoutMs,
+    idleTimeoutMs: resolved.remoteIdleTimeoutMs,
+  })
+  const shellRegistry = new RemoteShellRegistry({
+    connectTimeoutMs: resolved.remoteConnectTimeoutMs,
+    terminalsPerSession: resolved.remoteTerminalsPerSession,
+    reconnectGraceMs: resolved.reconnectGraceMs,
+  }, (serverId) => sftpPool.getServer(serverId))
+  void loadServers()
+    .then(servers => { sftpPool.syncServers(servers) })
+    .catch(() => { /* config-store already logs; the pool stays empty */ })
 
   // ── User-facing "Side card" preferences ──────────────────────────────────
   // Register the namespace with the settings provider so the Settings page
@@ -496,7 +598,7 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
   })
 
   // ── JSON API ────────────────────────────────────────────────────────────
-  const api = buildApi(ctx, ptyManager, agentPtyRegistry, resolved, () => settingsFace)
+  const api = buildApi(ctx, ptyManager, agentPtyRegistry, resolved, () => settingsFace, sftpPool, shellRegistry)
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
     path: '/sidebar/api',
@@ -647,6 +749,54 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
     },
   }), 'dsh-better-sidebar: /sidebar/html preview route')
 
+  // ── Remote file route (binary-safe download of remote files) ────────────
+  // Streams one remote file from a short-lived dedicated SFTP connection
+  // (the pool is untouched, so a slow download never blocks directory ops).
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'prefix',
+    path: '/sidebar/remote-file',
+    handler: async (req, res) => {
+      if (!fence(req)) {
+        res.writeHead(403)
+        res.end('forbidden')
+        return
+      }
+      if (req.method !== 'GET') {
+        res.writeHead(405)
+        res.end()
+        return
+      }
+      try {
+        const url = new URL(req.url ?? '/', 'http://dsh.internal')
+        const serverId = url.searchParams.get('serverId')
+        const raw = url.searchParams.get('path')
+        if (serverId === null || raw === null) throw new SidebarError('bad-request', 'serverId and path are required')
+        if (!raw.startsWith('/')) throw new SidebarError('bad-request', 'remote path must be an absolute POSIX path', 400)
+        const download = url.searchParams.get('download') === '1'
+        const cap = download ? REMOTE_DOWNLOAD_LIMIT : resolved.mediaLimit
+        await sftpPool.downloadStream(serverId, raw, async (stream, size) => {
+          if (size > cap) {
+            stream.destroy()
+            writeError(res, new SidebarError('remote-error', 'file too large to serve', 413))
+            return
+          }
+          const headers: Record<string, string> = {
+            'content-type': mediaTypeForPath(raw),
+            'content-length': String(size),
+            'cache-control': 'no-cache',
+          }
+          if (download) {
+            headers['content-disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(basename(raw))}`
+          }
+          res.writeHead(200, headers)
+          stream.pipe(res as unknown as NodeJS.WritableStream)
+        })
+      } catch (error) {
+        writeError(res, error)
+      }
+    },
+  }), 'dsh-better-sidebar: /sidebar/remote-file route')
+
   // ── Terminal WebSocket ──────────────────────────────────────────────────
   // One upgrade endpoint serves both UI-tab terminals (?tab=...) and
   // agent-owned terminals (?uuid=...). The two paths attach to different
@@ -693,12 +843,33 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
     },
   }), 'dsh-better-sidebar: agent-terminals push WebSocket')
 
-  ctx.effect(() => () => {
-    toolsDisposers?.()
+  // ── Remote terminal WebSocket ────────────────────────────────────────────
+  // Same wire protocol as the local terminal: input frames are raw text,
+  // resize frames are JSON {type:'resize',cols,rows}, and a close frame
+  // {type:'close'} kills the shell immediately. A bare socket drop leaves
+  // the shell alive for the reconnect grace, so a refresh reattaches.
+  const remoteWss = new WebSocketServer({ noServer: true })
+  ctx.effect(() => ctx.webServer.registerUpgrade({
+    path: '/sidebar/ws/remote-terminal',
+    handler: (req, socket, head) => {
+      if (!fence(req)) {
+        socket.destroy()
+        return
+      }
+      remoteWss.handleUpgrade(req as unknown as IncomingMessage, socket as unknown as Duplex, head as Buffer, (ws) => {
+        void attachRemoteTerminal(shellRegistry, ws, req)
+      })
+    },
+  }), 'dsh-better-sidebar: remote-terminal WebSocket')
+
+  ctx.effect(() => () => {    toolsDisposers?.()
     ptyManager.disposeAll()
     agentPtyRegistry.disposeAll()
+    sftpPool.closeAll()
+    shellRegistry.disposeAll()
     wss.close()
     agentListWss.close()
+    remoteWss.close()
   }, 'dsh-better-sidebar: teardown')
 }
 
@@ -729,6 +900,62 @@ async function attachAgentList(
   }
 }
 
+/**
+ * Wire one viewer socket to a remote shell: open (or reuse) the shell for
+ * the session/tab key, replay its transcript, pump input/resize both ways.
+ * A close frame kills the shell immediately (the tab was closed); a bare
+ * socket drop hands the shell to the reconnect grace, mirroring the local
+ * terminal contract.
+ */
+async function attachRemoteTerminal(
+  registry: RemoteShellRegistry,
+  ws: WebSocket,
+  req: SidebarHttpRequest,
+): Promise<void> {
+  try {
+    const url = new URL(req.url ?? '/', 'http://dsh.internal')
+    const sessionId = url.searchParams.get('sessionId')
+    const serverId = url.searchParams.get('serverId')
+    const tabId = url.searchParams.get('tabId')
+    const dir = url.searchParams.get('dir') ?? ''
+    if (sessionId === null || serverId === null || tabId === null) {
+      ws.close(1008, 'sessionId, serverId and tabId are required')
+      return
+    }
+    const handle = await registry.open(sessionId, serverId, tabId, dir, 80, 24)
+    registry.attach(handle, ws)
+    ws.on('message', (data) => {
+      const text = data.toString('utf8')
+      let control: { type?: unknown; cols?: unknown; rows?: unknown } | null = null
+      try {
+        const parsed: unknown = JSON.parse(text)
+        if (parsed !== null && typeof parsed === 'object') {
+          control = parsed as { type?: unknown; cols?: unknown; rows?: unknown }
+        }
+      } catch {
+        // Not JSON: terminal input.
+      }
+      if (control !== null && control.type === 'close') {
+        registry.close(handle.key)
+        return
+      }
+      if (
+        control !== null
+        && control.type === 'resize'
+        && typeof control.cols === 'number' && typeof control.rows === 'number'
+      ) {
+        const dims = clampDims(control.cols, control.rows)
+        registry.resize(handle, dims.cols, dims.rows)
+      } else if (control === null) {
+        registry.write(handle, text)
+      }
+    })
+    ws.on('close', () => { registry.detach(handle, ws) })
+    ws.on('error', () => { registry.detach(handle, ws) })
+  } catch (error) {
+    ws.close(1011, error instanceof Error ? error.message : String(error))
+  }
+}
 /**
  * Wire one terminal socket to its pty: replay transcript, pump both ways.
  * Two attach modes share the wire protocol:

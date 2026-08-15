@@ -622,7 +622,8 @@ describe('state subscription (v0.12.0)', () => {
     const snapshot = service.getSnapshot()
     expect(snapshot.sessionId).toBe('s1')
     expect(snapshot.state).toBeDefined()
-    expect(snapshot.prefs.openByDefault).toBe(true)
+    // The openByDefault=false baseline patch: new sessions start collapsed.
+    expect(snapshot.prefs.openByDefault).toBe(false)
   })
 
   it('subscribeState fires on state changes but NOT on registry changes', () => {

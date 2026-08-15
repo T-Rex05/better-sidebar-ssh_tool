@@ -34,7 +34,7 @@ import { appendToDraft } from './conversation-draft.ts'
 import {
   BOTTOM_MIN, PANEL_MIN, agentUuidOf, firstLeaf, isAgentTabId, leafWithTab, migrateBottomTabs, moveTab, moveTabToEdge, openDiffTab,
   reconcileAgentTerminals,
-  resizeSplitIn, setBottomHeight, setWidth, toggleBottomPanel, toggleExpanded, togglePanel,
+  resizeSplitIn, setBottomHeight, setWidth, splitPaneAt, toggleBottomPanel, toggleExpanded, togglePanel,
   type DropZone, type SidebarState, type SidebarStore, type SidebarTab, type SplitNode,
 } from './state.ts'
 import { IconPanelBottomOutline16, IconPanelRightOutline16 } from './icons.tsx'
@@ -49,6 +49,7 @@ import { detectNewDirectSubagent } from './subagent-detect.ts'
 import { detectNewJob } from './subagent-jobs.ts'
 import { t } from './locales.ts'
 import { api, type SessionScope } from './api.ts'
+import { getRemoteTerminalManager } from './remote-terminal-shared.tsx'
 import css from './sidebar.module.css'
 
 /** How many consecutive reconnect failures stop the agent-terminals push loop
@@ -560,6 +561,20 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
         ? undefined
         : leafWithTab(current.splits, tabId) ?? leafWithTab(current.bottomSplits, tabId)
       const tab = leaf?.tabs.find(candidate => candidate.id === tabId)
+      // A remote terminal closes through its manager: it owns the shell
+      // lifetime (the WS close frame is suppressed — ownLifetime) and the
+      // record bookkeeping, and it kills the ssh2 shell explicitly. The
+      // manager removes the tab from EITHER tree, so this early return also
+      // covers the docked (bottom-panel) half. When the manager is gone
+      // (never in practice), fall through to the plain close so the tab
+      // still disappears.
+      if (tab?.type === 'remote-terminal') {
+        const manager = getRemoteTerminalManager()
+        if (manager !== null && sessionId !== undefined) {
+          manager.closeTerminal(sessionId, tabId)
+          return
+        }
+      }
       // Route through the service: the tab-bar close is the canonical close
       // path (finds the pane itself, fires descriptor.onClose); the session
       // scope (with its cwd) rides to the callback.
@@ -595,6 +610,10 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
     },
     resizeSplit: (splitId, index, deltaFrac) => {
       store.reduce(s => resizeSplitIn(s, splitId, index, deltaFrac))
+    },
+    // The strip's split-right / split-down buttons (either tree).
+    splitPane: (paneId, dir) => {
+      store.reduce(s => splitPaneAt(s, paneId, dir))
     },
   }), [store, sessionId, cwd])
 

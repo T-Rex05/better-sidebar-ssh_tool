@@ -66,9 +66,15 @@ export function TabBar(props: {
   /** Badge resolver for tab labels (reads the descriptor's `badge`; the
    *  resolver returns the rendered pill or null). */
   getTabBadge?: (tab: SidebarTab) => ReactNode
+  /**
+   * Extra controls rendered at the strip's right end, immediately LEFT of
+   * the + menu (the split-right / split-down buttons). Sticky like the + so
+   * an overflowing tab row keeps them reachable.
+   */
+  trailing?: ReactNode
 }) {
   const {
-    paneId, tabs, active, onActivate, onClose, onNewTab, newTabOptions, onDropTab, getTabIcon, getTabBadge,
+    paneId, tabs, active, onActivate, onClose, onNewTab, newTabOptions, onDropTab, getTabIcon, getTabBadge, trailing,
   } = props
   const [menuOpen, setMenuOpen] = useState(false)
   const [dragOver, setDragOver] = useState(false)
@@ -178,8 +184,10 @@ export function TabBar(props: {
         {/*
           The + sits immediately after the rightmost tab (sticky at the
           right edge of the scrollport when the tabs overflow, so it stays
-          reachable no matter how many tabs are open).
+          reachable no matter how many tabs are open). The trailing split
+          buttons come first so they pin flush LEFT of the +.
         */}
+        {trailing}
         <Menu
           open={menuOpen}
           onClose={() => { setMenuOpen(false) }}

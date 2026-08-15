@@ -42,6 +42,12 @@ export interface SidebarConfig {
   terminalsPerSession?: number
   /** How long a disconnected terminal process survives awaiting a reconnect. */
   reconnectGraceMs?: number
+  /** Remote SSH shells open per session (the Start SSH Session terminals). */
+  remoteTerminalsPerSession?: number
+  /** SSH connect timeout for the SFTP pool and remote shells (ms). */
+  remoteConnectTimeoutMs?: number
+  /** SFTP pool idle disconnect (ms); the next operation reconnects. */
+  remoteIdleTimeoutMs?: number
 }
 
 /** Schemastery schema for the plugin configuration. */
@@ -51,6 +57,9 @@ export const Config: z<SidebarConfig> = z.object({
   listLimit: z.number().step(1).min(1).default(1000),
   terminalsPerSession: z.number().step(1).min(1).default(3),
   reconnectGraceMs: z.number().step(1).min(0).default(30_000),
+  remoteTerminalsPerSession: z.number().step(1).min(1).default(8),
+  remoteConnectTimeoutMs: z.number().step(1).min(1000).default(15_000),
+  remoteIdleTimeoutMs: z.number().step(1).min(1000).default(1_800_000),
 })
 
 /** Fully defaulted sidebar host settings. */
@@ -60,6 +69,9 @@ export interface ResolvedSidebarConfig {
   listLimit: number
   terminalsPerSession: number
   reconnectGraceMs: number
+  remoteTerminalsPerSession: number
+  remoteConnectTimeoutMs: number
+  remoteIdleTimeoutMs: number
 }
 
 /**
@@ -75,6 +87,9 @@ export function resolveSidebarConfig(config: SidebarConfig | undefined): Resolve
     listLimit: config?.listLimit ?? 1000,
     terminalsPerSession: config?.terminalsPerSession ?? 3,
     reconnectGraceMs: config?.reconnectGraceMs ?? 30_000,
+    remoteTerminalsPerSession: config?.remoteTerminalsPerSession ?? 8,
+    remoteConnectTimeoutMs: config?.remoteConnectTimeoutMs ?? 15_000,
+    remoteIdleTimeoutMs: config?.remoteIdleTimeoutMs ?? 1_800_000,
   }
 }
 

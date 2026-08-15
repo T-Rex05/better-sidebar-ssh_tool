@@ -108,3 +108,39 @@ export const IconGlobeOutline16 = ({ size = 16, className }: IconProps) => (
     <path d="M1.5 8h13M8 1.5c-2.4 1.8-2.4 11.2 0 13M8 1.5c2.4 1.8 2.4 11.2 0 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
   </svg>
 )
+
+// ── Remote SSH feature glyphs ─────────────────────────────────────────────
+
+/** Server glyph: two stacked racks with status LEDs. */
+export const IconServerOutline16 = ({ size = 16, className }: IconProps) => (
+  <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect x="1.5" y="2" width="13" height="5.5" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+    <rect x="1.5" y="8.5" width="13" height="5.5" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+    <circle cx="4.25" cy="4.75" r="0.9" fill="currentColor" />
+    <circle cx="4.25" cy="11.25" r="0.9" fill="currentColor" />
+  </svg>
+)
+
+/** Undock glyph: an arrow moving a panel back into the frame. */
+export const IconUndockOutline16 = ({ size = 16, className }: IconProps) => (
+  <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M3 5.5h8a1.5 1.5 0 0 1 1.5 1.5v6A1.5 1.5 0 0 1 11 14.5H4A1.5 1.5 0 0 1 2.5 13V7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M6.5 2.5 10 6M10 2.5 6.5 6M9 5H2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+)
+
+/** Split-right glyph (VSCode split editor): a frame divided vertically. */
+export const IconSplitRightOutline16 = ({ size = 16, className }: IconProps) => (
+  <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect x="1.5" y="2" width="13" height="12" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+    <path d="M8 2v12" stroke="currentColor" strokeWidth="1.5" />
+  </svg>
+)
+
+/** Split-down glyph: a frame divided horizontally. */
+export const IconSplitDownOutline16 = ({ size = 16, className }: IconProps) => (
+  <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect x="1.5" y="2" width="13" height="12" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+    <path d="M2 8h12" stroke="currentColor" strokeWidth="1.5" />
+  </svg>
+)

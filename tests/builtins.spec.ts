@@ -1,5 +1,5 @@
 /**
- * Built-in registration tests: the plugin registers 7 tabs and 6 file
+ * Built-in registration tests: the plugin registers 9 tabs and 6 file
  * viewers through the same service external plugins use (dogfooding);
  * the catch-all `code` viewer, the NUL-sniffing `binary-download` viewer,
  * and the html sandbox settings pin the registry's behavior. (Office
@@ -24,21 +24,21 @@ function setup(): { service: ReturnType<typeof createBetterSidebarService>; stor
 }
 
 describe('built-in tab registrations', () => {
-  it('registers the 7 built-in tabs', () => {
+  it('registers the 9 built-in tabs', () => {
     const { service } = setup()
     expect(service.getTabs().map(t => t.id).sort()).toEqual(
-      ['browser', 'diff', 'editor', 'explorer', 'git', 'subagent', 'terminal'],
+      ['browser', 'diff', 'editor', 'explorer', 'git', 'remote', 'remote-terminal', 'subagent', 'terminal'],
     )
   })
 
-  it('editor and diff are hidden from the + menu (opened by file-open / git view)', () => {
+  it('editor, diff and remote-terminal are hidden from the + menu (opened by file-open / git view / the terminal manager)', () => {
     const { service } = setup()
-    expect(service.getTabs().filter(t => t.hidden).map(t => t.id).sort()).toEqual(['diff', 'editor'])
+    expect(service.getTabs().filter(t => t.hidden).map(t => t.id).sort()).toEqual(['diff', 'editor', 'remote-terminal'])
   })
 
   it('single-instance tabs use the single sugar', () => {
     const { service } = setup()
-    for (const id of ['explorer', 'git', 'subagent']) {
+    for (const id of ['explorer', 'git', 'remote', 'subagent']) {
       expect(service.getTab(id)?.single).toBe(true)
     }
   })
@@ -88,6 +88,23 @@ describe('built-in tab registrations', () => {
     expect(tabs[0]!.id).toBe('browser:1')
     expect(tabs[1]!.id).toBe('browser:2')
     expect(state.nextBrowser).toBe(3)
+  })
+
+  it('the remote-terminal createTab mints remote-term:<n> ids from the seed meta', () => {
+    const { service, store } = setup()
+    store.setSession('s1')
+    const meta = { serverId: 'srv-1', serverName: 'prod', dir: '/var/www' }
+    service.openTab({ type: 'remote-terminal', meta })
+    const state = store.getSnapshot().state!
+    const tabs = allLeaves(state.splits).flatMap(leaf => leaf.tabs).filter(t => t.type === 'remote-terminal')
+    expect(tabs).toHaveLength(1)
+    expect(tabs[0]!.id).toBe('remote-term:1')
+    expect(tabs[0]!.title).toBe('prod: www')
+    expect(tabs[0]!.meta).toEqual(meta)
+    expect(state.nextRemoteTerminal).toBe(2)
+    // Without the seed meta the mint refuses (no server to attach to).
+    service.openTab({ type: 'remote-terminal' })
+    expect(store.getSnapshot().state!.nextRemoteTerminal).toBe(2)
   })
 
   it('every built-in tab carries the settings-surface icon', () => {

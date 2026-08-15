@@ -48,6 +48,9 @@ export const HTML_IFRAME_SANDBOX = 'allow-scripts allow-popups allow-downloads a
 
 export function TextEditor(props: FileViewerProps) {
   const { ctx, scope, path, viewerId, content, truncated } = props
+  // Remote files push edits through the provided writer (the sync button);
+  // local files keep the default api.fsWrite below.
+  const writeBack = props.writeFile ?? ((text: string) => api.fsWrite(scope, path, text))
   const [mode, setMode] = useState<ViewMode>('preview')
   /** The editor's current text (null while clean); preview renders this. */
   const [draft, setDraft] = useState<string | null>(null)
@@ -220,7 +223,7 @@ export function TextEditor(props: FileViewerProps) {
     if (view === null || savingRef.current) return
     savingRef.current = true
     setSaveState('saving')
-    api.fsWrite(scope, path, view.state.doc.toString()).then(() => {
+    writeBack(view.state.doc.toString()).then(() => {
       savingRef.current = false
       setDraft(null)
       setDirty(false)
@@ -304,8 +307,8 @@ export function TextEditor(props: FileViewerProps) {
           <button
             type="button"
             className={css.iconButton}
-            aria-label={t('save')}
-            title={`${t('save')} (Ctrl/Cmd+S)`}
+            aria-label={props.remote === true ? t('syncToRemote') : t('save')}
+            title={props.remote === true ? `${t('syncToRemote')} (Ctrl/Cmd+S)` : `${t('save')} (Ctrl/Cmd+S)`}
             onClick={save}
           >
             <IconCheckOutline16 />
@@ -340,7 +343,7 @@ export function TextEditor(props: FileViewerProps) {
           />
         </div>
       )}
-      {html && mode === 'preview' && (
+      {html && props.remote !== true && mode === 'preview' && (
         <>
           <SandboxStatusBar
             sandboxed={!htmlNoSandbox}

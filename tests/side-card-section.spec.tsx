@@ -22,6 +22,14 @@ import { createBetterSidebarService, type BetterSidebarService } from '../src/cl
 import { SIDEBAR_PREFS_DEFAULTS } from '../src/prefs-shared.ts'
 import { FeatureSettingsRows, mergePluginSetting, SideCardSection, type SideCardSectionProps } from '../src/client/SideCardSection.tsx'
 
+// The section's copy follows the locale service: point the browser-language
+// fallback at English so the render assertions are locale-stable on every
+// host (the machine running this suite may default to zh).
+Object.defineProperty(globalThis, 'navigator', {
+  value: { language: 'en-US' },
+  configurable: true,
+})
+
 /** One tab + one viewer + the subagent-style nested toggle under a tab. */
 function mount(): { store: SidebarStore; service: BetterSidebarService } {
   const store = createSidebarStore()
@@ -80,13 +88,14 @@ describe('SideCardSection declarative inventory', () => {
     expect(html).toContain('>explorer<')
     expect(html).toContain('data-icon="subagent"')
     expect(html).toContain('>Subagents<')
-    // Default prefs: openByDefault + interceptOpenPath switches checked, and
-    // both tabs + the image viewer cards pressed (3 aria-pressed cards).
+    // Default prefs: interceptOpenPath switch checked (openByDefault is
+    // OFF by default since the baseline patch), and both tabs + the image
+    // viewer cards pressed (3 aria-pressed cards).
     // The nested auto-open toggle is NOT an inline card (it lives in the popup).
     expect(pressedCount(html, 'true')).toBe(3)
     expect(pressedCount(html, 'false')).toBe(0)
     // The general toggles are custom switches (real checkboxes, checked).
-    expect(html.match(/checked=""/g)?.length).toBe(2)
+    expect(html.match(/checked=""/g)?.length).toBe(1)
     expect(html).not.toContain('Auto-open Subagents')
   })
 
@@ -140,9 +149,10 @@ describe('SideCardSection declarative inventory', () => {
     expect(html).toContain('>Subagents<')
     expect(html).toContain('>Image<')
     expect(pressedCount(html, 'false')).toBe(2)
-    // The explorer card stays pressed; the general switches stay checked.
+    // The explorer card stays pressed; the general switches stay checked
+    // (only interceptOpenPath — openByDefault is off by default).
     expect(pressedCount(html, 'true')).toBe(1)
-    expect(html.match(/checked=""/g)?.length).toBe(2)
+    expect(html.match(/checked=""/g)?.length).toBe(1)
   })
 
   it('hides the gear of a disabled feature (its related settings are dormant)', () => {

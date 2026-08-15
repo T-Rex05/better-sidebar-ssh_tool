@@ -12,13 +12,15 @@ import { allLeaves, isAgentTabId, type SidebarState } from '../state.ts'
 import { t } from '../locales.ts'
 import { openSidebarFile } from '../intercept.tsx'
 import { ExplorerView } from '../ExplorerView.tsx'
+import { RemoteExplorer } from '../RemoteExplorer.tsx'
+import { RemoteTerminalToolbar, type RemoteTerminalMeta, type RemoteTerminalProps } from '../remote-terminal-shared.tsx'
 import { EditorHost } from '../EditorHost.tsx'
 import { lazyChunkComponent } from '../lazy-chunk.tsx'
 import { GitView } from '../GitView.tsx'
 import { DiffTab } from '../DiffTab.tsx'
 import { SubagentView } from '../SubagentView.tsx'
 import { BrowserView } from '../BrowserView.tsx'
-import { IconTerminalOutline16, IconDiffOutline16, IconGlobeOutline16 } from '../icons.tsx'
+import { IconTerminalOutline16, IconDiffOutline16, IconGlobeOutline16, IconServerOutline16 } from '../icons.tsx'
 import { TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN } from '../../prefs-shared.ts'
 import type { ComponentType } from 'react'
 import type { SessionScope } from '../api.ts'
@@ -42,6 +44,12 @@ const LazyTerminal = lazyChunkComponent<TerminalViewProps>(
   (mod) => mod.TerminalView as ComponentType<TerminalViewProps> | undefined,
 )
 
+/** Lazy wrapper over the remote terminal view (same xterm chunk). */
+const LazyRemoteTerminal = lazyChunkComponent<RemoteTerminalProps>(
+  'terminal',
+  (mod) => mod.RemoteTerminalView as ComponentType<RemoteTerminalProps> | undefined,
+)
+
 /** The terminal view's props (mirror of TerminalView's own signature). */
 interface TerminalViewProps {
   scope: SessionScope
@@ -59,7 +67,7 @@ function uiTerminalCount(state: SidebarState): number {
     .filter(tab => tab.type === 'terminal' && !isAgentTabId(tab.id)).length
 }
 
-/** The 7 built-in tab descriptors. */
+/** The 9 built-in tab descriptors. */
 export function builtinTabs(ctx: Context): readonly TabDescriptor[] {
   return [
     {
@@ -68,10 +76,25 @@ export function builtinTabs(ctx: Context): readonly TabDescriptor[] {
       icon: (size: number) => <IconCodeOutline16 size={size} />,
       order: -1,
       hidden: true,
-      dedupeKey: (tab) => tab.path,
-      component: ({ ctx, store, scope, tab }) => (
-        <EditorHost ctx={ctx} store={store} scope={scope} path={tab.path ?? ''} title={tab.title} />
-      ),
+      // Remote files dedupe per (server, path); local files keep the old
+      // per-path behavior ('' | path — identical results as before).
+      dedupeKey: (tab) => {
+        const meta = tab.meta as { remote?: { serverId: string } } | undefined
+        return `${meta?.remote?.serverId ?? ''}|${tab.path ?? ''}`
+      },
+      component: ({ ctx, store, scope, tab }) => {
+        const meta = tab.meta as { remote?: { serverId: string; serverName: string } } | undefined
+        return (
+          <EditorHost
+            ctx={ctx}
+            store={store}
+            scope={scope}
+            path={tab.path ?? ''}
+            title={tab.title}
+            remote={meta?.remote}
+          />
+        )
+      },
     },
     {
       id: 'explorer',
@@ -88,6 +111,16 @@ export function builtinTabs(ctx: Context): readonly TabDescriptor[] {
           onOpenFile={(path) => { openSidebarFile(ctx, store, scope.sessionId, path) }}
           onReferenceFile={onReferenceFile ?? (() => { /* no-op */ })}
         />
+      ),
+    },
+    {
+      id: 'remote',
+      title: () => t('remote'),
+      icon: (size: number) => <IconServerOutline16 size={size} />,
+      order: 15,
+      single: true,
+      component: ({ ctx, store, scope }) => (
+        <RemoteExplorer ctx={ctx} store={store} scope={scope} />
       ),
     },
     {
@@ -223,5 +256,53 @@ export function builtinTabs(ctx: Context): readonly TabDescriptor[] {
           : <DiffTab sessionId={scope.sessionId} cwd={scope.cwd} diff={tab.diff} />
       ),
     },
+    {
+      // The docked half of one remote terminal (the other half is the
+      // conversation.view ring entry, managed by the terminal manager).
+      // Hidden from the + menu: instances open via Start SSH Session and
+      // land here through the manager's dockTerminal.
+      id: 'remote-terminal',
+      title: () => t('remoteTerminal'),
+      icon: (size: number) => <IconTerminalOutline16 size={size} />,
+      order: -1,
+      hidden: true,
+      createTab: (state, seed) => {
+        const meta = seed.meta as RemoteTerminalMeta | undefined
+        if (meta === undefined || meta.serverId === undefined) return null
+        const id = `remote-term:${state.nextRemoteTerminal}`
+        return {
+          tab: {
+            id,
+            type: 'remote-terminal',
+            title: `${meta.serverName}: ${remoteBaseName(meta.dir)}`,
+            meta,
+          },
+          patch: { nextRemoteTerminal: state.nextRemoteTerminal + 1 },
+        }
+      },
+      component: ({ scope, store, tab }) => {
+        const meta = tab.meta as RemoteTerminalMeta | undefined
+        if (meta === undefined) return null
+        return (
+          <LazyRemoteTerminal
+            scope={scope}
+            store={store}
+            tabId={tab.id}
+            meta={meta}
+            toolbar={
+              <RemoteTerminalToolbar tabId={tab.id} sessionId={scope.sessionId} />
+            }
+          />
+        )
+      },
+    },
   ]
+}
+
+/** The last path segment of a remote dir (tab titles). */
+function remoteBaseName(path: string): string {
+  const trimmed = path.replace(/\/+$/, '')
+  if (trimmed === '') return '/'
+  const at = trimmed.lastIndexOf('/')
+  return at === -1 ? trimmed : trimmed.slice(at + 1)
 }

@@ -15,6 +15,8 @@ import clsx from 'clsx'
 import type { SidebarState, SidebarTab, SplitNode } from './state.ts'
 import type { DropZone } from './state.ts'
 import { TabBar, type NewTabOption, parseDrag, type TabDragPayload } from './TabBar.tsx'
+import { IconSplitDownOutline16, IconSplitRightOutline16 } from './icons.tsx'
+import { t } from './locales.ts'
 import css from './sidebar.module.css'
 
 /** Actions the workbench needs (bound to the store by the sidebar shell). */
@@ -28,6 +30,12 @@ export interface WorkbenchActions {
   /** Reorder within a pane (drop onto another tab inserts before it). */
   moveTabBefore: (payload: TabDragPayload, toPane: string, beforeTabId: string) => void
   resizeSplit: (splitId: string, index: number, deltaFrac: number) => void
+  /**
+   * Explicit split (the strip's split-right / split-down buttons): split
+   * the pane with a fresh empty leaf beside it ('row' = right, 'col' =
+   * below). The pane may live in either tree.
+   */
+  splitPane: (paneId: string, dir: 'row' | 'col') => void
 }
 
 /** One divider: pointer-capture drag translating px deltas into fractions.
@@ -184,6 +192,28 @@ function LeafView(props: {
           if (before === null) actions.moveTabToEdge(payload, leaf.id, 'center')
           else actions.moveTabBefore(payload, leaf.id, before)
         }}
+        trailing={(
+          <div className={css.tabSplitActions}>
+            <button
+              type="button"
+              className={css.tabSplitButton}
+              title={t('splitRight')}
+              aria-label={t('splitRight')}
+              onClick={() => { actions.splitPane(leaf.id, 'row') }}
+            >
+              <IconSplitRightOutline16 />
+            </button>
+            <button
+              type="button"
+              className={css.tabSplitButton}
+              title={t('splitDown')}
+              aria-label={t('splitDown')}
+              onClick={() => { actions.splitPane(leaf.id, 'col') }}
+            >
+              <IconSplitDownOutline16 />
+            </button>
+          </div>
+        )}
       />
       {leaf.tabs.length > 0 ? (
         /*

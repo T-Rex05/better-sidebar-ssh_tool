@@ -25,6 +25,17 @@ export type SidebarDiffRef =
   | { kind: 'worktree'; path: string; staged: boolean; untracked?: boolean }
   | { kind: 'commit'; hash: string; hashFull: string; subject: string }
 
+/** One remote terminal record (persisted per session): the identity of a
+ *  Start SSH Session terminal, whether it currently lives in the center
+ *  view ring (docked=false) or in the bottom dock workbench (docked=true). */
+export interface RemoteTerminalRecord {
+  tabId: string
+  serverId: string
+  serverName: string
+  dir: string
+  docked: boolean
+}
+
 /** One open tab. `path` carries the file (editor) or is absent (explorer/git);
  *  `diff` carries the change a diff tab shows; `meta` (v0.12.0+) carries
  *  plugin-owned JSON-serializable state, preserved across reloads. */
@@ -72,6 +83,12 @@ export interface SidebarState {
   nextBrowser: number
   /** Explorer expansion set (absolute directory paths). */
   expanded: string[]
+  /** Remote explorer expansion set (keys `serverId|remotePath`). */
+  remoteExpanded: string[]
+  /** Monotonic remote terminal tab counter (ids survive reloads). */
+  nextRemoteTerminal: number
+  /** The session's remote terminals (view-ring labels + dock placement). */
+  remoteTerminals: RemoteTerminalRecord[]
   /** The right sidebar's split tree (the original workbench). */
   splits: SplitNode
   /** Whether the bottom panel (a second, independent workbench) is open. */
@@ -162,6 +179,9 @@ export function makeDefaultState(width = PANEL_DEFAULT, panelOpen = true, seedEx
     nextTerminal: 1,
     nextBrowser: 1,
     expanded: [],
+    nextRemoteTerminal: 1,
+    remoteExpanded: [],
+    remoteTerminals: [],
     splits: leaf,
     bottomOpen: false,
     bottomHeight: BOTTOM_DEFAULT,
@@ -635,6 +655,46 @@ export function toggleExpanded(state: SidebarState, path: string): SidebarState 
   return { ...state, expanded }
 }
 
+/** Toggle a remote directory in the remote explorer expansion set
+ *  (keys are `serverId|remotePath` so servers never collide). */
+export function toggleRemoteExpanded(state: SidebarState, key: string): SidebarState {
+  const remoteExpanded = state.remoteExpanded.includes(key)
+    ? state.remoteExpanded.filter(item => item !== key)
+    : [...state.remoteExpanded, key]
+  return { ...state, remoteExpanded }
+}
+
+/** Upsert one remote terminal record (open / dock / undock bookkeeping). */
+export function upsertRemoteTerminal(state: SidebarState, record: RemoteTerminalRecord): SidebarState {
+  const index = state.remoteTerminals.findIndex(item => item.tabId === record.tabId)
+  const remoteTerminals = index === -1
+    ? [...state.remoteTerminals, record]
+    : state.remoteTerminals.map((item, i) => (i === index ? record : item))
+  return { ...state, remoteTerminals }
+}
+
+/** Flip one remote terminal's docked flag (kept in sync by the manager). */
+export function setRemoteTerminalDocked(state: SidebarState, tabId: string, docked: boolean): SidebarState {
+  if (!state.remoteTerminals.some(item => item.tabId === tabId)) return state
+  return {
+    ...state,
+    remoteTerminals: state.remoteTerminals.map(item => (item.tabId === tabId ? { ...item, docked } : item)),
+  }
+}
+
+/** Remove one remote terminal record (terminal killed / closed). */
+export function removeRemoteTerminal(state: SidebarState, tabId: string): SidebarState {
+  if (!state.remoteTerminals.some(item => item.tabId === tabId)) return state
+  return { ...state, remoteTerminals: state.remoteTerminals.filter(item => item.tabId !== tabId) }
+}
+
+/** Split one pane in-place (the explicit split-right/split-down buttons;
+ *  the pane may live in either tree). */
+export function splitPaneAt(state: SidebarState, paneId: string, dir: 'row' | 'col'): SidebarState {
+  const key = treeOf(state, paneId)
+  return { ...state, [key]: splitLeafAt(state[key], paneId, dir), activePane: paneId }
+}
+
 /** Adjust one split divider: `i` is the left/top child index, delta in fractions. */
 export function resizeSplit(node: SplitNode, splitId: string, index: number, delta: number): SplitNode {
   if (node.kind === 'leaf') return node
@@ -803,6 +863,23 @@ export function sanitizeState(parsed: unknown): SidebarState | undefined {
     : 1
   if (typeof record.activePane !== 'string' && record.activePane !== null) return undefined
   if (!Array.isArray(record.expanded) || record.expanded.some(item => typeof item !== 'string')) return undefined
+  // Remote-terminal fields arrived in a later build: missing or malformed
+  // values default so OLDER persisted layouts keep loading.
+  const nextRemoteTerminal = typeof record.nextRemoteTerminal === 'number' && Number.isInteger(record.nextRemoteTerminal) && record.nextRemoteTerminal >= 1
+    ? record.nextRemoteTerminal
+    : 1
+  const remoteExpanded = Array.isArray(record.remoteExpanded)
+    ? record.remoteExpanded.filter((item): item is string => typeof item === 'string')
+    : []
+  const remoteTerminals = Array.isArray(record.remoteTerminals)
+    ? record.remoteTerminals.filter((item): item is RemoteTerminalRecord =>
+      item !== null && typeof item === 'object'
+      && typeof (item as Record<string, unknown>).tabId === 'string'
+      && typeof (item as Record<string, unknown>).serverId === 'string'
+      && typeof (item as Record<string, unknown>).serverName === 'string'
+      && typeof (item as Record<string, unknown>).dir === 'string'
+      && typeof (item as Record<string, unknown>).docked === 'boolean')
+    : []
   // The seen/reid maps are SHARED across both trees: pane/split ids must be
   // globally unique (the runtime uid counter is shared too), so a duplicate
   // seen first in the right tree gets a fresh id when it reappears in the
@@ -836,6 +913,9 @@ export function sanitizeState(parsed: unknown): SidebarState | undefined {
     nextTerminal: record.nextTerminal,
     nextBrowser,
     expanded: record.expanded as string[],
+    nextRemoteTerminal,
+    remoteExpanded,
+    remoteTerminals,
     splits,
     bottomOpen,
     bottomHeight,

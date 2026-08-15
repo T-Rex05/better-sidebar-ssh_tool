@@ -19,7 +19,7 @@
  *   frame schedules a 0-ms close; a bare socket drop gets the host's
  *   reconnect grace.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Terminal, type ITheme } from 'xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import 'xterm/css/xterm.css'
@@ -73,8 +73,24 @@ function xtermTheme(): ITheme {
   }
 }
 
-export function TerminalView(props: { scope: SessionScope; tabId: string; store: SidebarStore }) {
-  const { scope, tabId, store } = props
+export function TerminalView(props: {
+  scope: SessionScope
+  tabId: string
+  store: SidebarStore
+  /** Override the WS attach URL (the remote terminal builds its own). */
+  wsUrl?: () => string
+  /** Extra toolbar rendered above the banner/terminal (remote dock toolbar). */
+  toolbar?: ReactNode
+  /**
+   * When true the unmount close frame is NEVER sent: the shell lifetime is
+   * owned elsewhere (the remote terminal manager kills it explicitly on tab
+   * close — view-ring switches unmount the component constantly).
+   */
+  ownLifetime?: boolean
+  /** Included in the effect deps so remote attach targets re-connect live. */
+  attachKey?: string
+}) {
+  const { scope, tabId, store, toolbar } = props
   const hostRef = useRef<HTMLDivElement>(null)
   const [connected, setConnected] = useState(false)
   const [fatal, setFatal] = useState<string | null>(null)
@@ -111,6 +127,7 @@ export function TerminalView(props: { scope: SessionScope; tabId: string; store:
     let failures = 0
 
     const wsUrl = (): string => {
+      if (props.wsUrl !== undefined) return props.wsUrl()
       const url = new URL('/sidebar/ws/terminal', location.origin)
       url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
       // Agent terminals attach by uuid (the host looks them up in the agent
@@ -245,18 +262,24 @@ export function TerminalView(props: { scope: SessionScope; tabId: string; store:
       // Agent terminals follow the same rule: a close frame kills the pty
       // (the user closed the sidebar tab); a bare socket drop leaves it
       // alive (the agent owns the lifetime).
-      if (!store.tabOpen(scope.sessionId, tabId)
-        && socket !== null && socket.readyState === WebSocket.OPEN) {
+      if (
+        props.ownLifetime !== true
+        && !store.tabOpen(scope.sessionId, tabId)
+        && socket !== null && socket.readyState === WebSocket.OPEN
+      ) {
         socket.send(JSON.stringify({ type: 'close' }))
       }
       socket?.close()
       term.dispose()
       connectRef.current = null
     }
-  }, [scope.sessionId, scope.cwd, tabId, store])
+  }, [scope.sessionId, scope.cwd, tabId, store, props.wsUrl, props.attachKey])
 
   return (
     <div className={css.terminalWrap}>
+      {toolbar !== undefined && toolbar !== null && (
+        <div className={css.remoteTerminalToolbar}>{toolbar}</div>
+      )}
       {fatal !== null && (
         <div className={css.terminalBanner}>
           {t('terminalError')}: {fatal}

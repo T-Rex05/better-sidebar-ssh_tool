@@ -6,17 +6,25 @@
  */
 import type { ReactNode } from 'react'
 import type { SessionScope } from './api.ts'
-import { downloadUrl } from './api.ts'
+import { downloadUrl, remoteFileUrl } from './api.ts'
 import { t } from './locales.ts'
 import css from './sidebar.module.css'
 
-export function BinaryDownload(props: { scope: SessionScope; path: string }): ReactNode {
-  const { scope, path } = props
+export function BinaryDownload(props: {
+  scope: SessionScope
+  path: string
+  /** Present on remote files: the download streams from the server. */
+  remote?: { serverId: string; serverName: string }
+}): ReactNode {
+  const { scope, path, remote } = props
+  const href = remote === undefined
+    ? downloadUrl(scope, path)
+    : remoteFileUrl(remote.serverId, path, true)
   return (
     <div className={css.editorBinary}>
       <span className={css.editorBinaryNotice}>{t('binaryNoPreview')}</span>
-      <a className={css.editorDownloadLink} href={downloadUrl(scope, path)} download>
-        {t('downloadToView')}
+      <a className={css.editorDownloadLink} href={href} download>
+        {remote === undefined ? t('downloadToView') : t('remoteDownload')}
       </a>
     </div>
   )

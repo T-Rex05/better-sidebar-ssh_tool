@@ -149,3 +149,4 @@ registry/
 
 # stray npm cache scratch dir
 .npm-cache-tmp/
+.planning/

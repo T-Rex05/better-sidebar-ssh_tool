@@ -52,8 +52,11 @@ describe('fs-tree', () => {
   })
 
   it('accepts absolute paths and rejects relative ones', () => {
-    // resolve() is platform-native: '/a/b' roots to the current drive on win32.
-    expect(requireAbsolute('/a/b')).toBe(process.platform === 'win32' ? '\\a\\b' : '/a/b')
+    // resolve() is platform-native: '/a/b' roots to the CURRENT DRIVE's root
+    // on win32 ('C:\a\b' when cwd sits on C:), stays '/a/b' elsewhere.
+    expect(requireAbsolute('/a/b')).toBe(
+      process.platform === 'win32' ? `${process.cwd().slice(0, 2)}\\a\\b` : '/a/b',
+    )
     if (process.platform === 'win32') {
       expect(requireAbsolute('C:/proj')).toBe('C:\\proj')
     }
@@ -499,6 +502,47 @@ describe('sidebar state', () => {
     expect(makeDefaultState().nextBrowser).toBe(1)
   })
 
+  it('sanitize accepts the remote-terminal fields (older persisted states keep loading)', () => {
+    const base = {
+      panelOpen: true,
+      width: 400,
+      nextTerminal: 1,
+      activePane: 'pane:1',
+      expanded: [],
+      splits: {
+        kind: 'leaf',
+        id: 'pane:1',
+        active: null,
+        tabs: [{ id: 't', type: 'explorer', title: 'Explorer' }],
+      },
+    }
+    // Older persisted states lack every remote field: they must keep loading.
+    const legacy = sanitizeState(base)!
+    expect(legacy.nextRemoteTerminal).toBe(1)
+    expect(legacy.remoteExpanded).toEqual([])
+    expect(legacy.remoteTerminals).toEqual([])
+    // A malformed counter falls back to 1; valid records survive; junk rows
+    // are dropped row-by-row.
+    const valid = sanitizeState({
+      ...base,
+      nextRemoteTerminal: 4,
+      remoteExpanded: ['srv-1', 'srv-1|/etc', 7],
+      remoteTerminals: [
+        { tabId: 'remote-term:1', serverId: 'srv-1', serverName: 'prod', dir: '/var/www', docked: true },
+        { tabId: 42, serverId: 'srv-1', serverName: 'prod', dir: '/', docked: false },
+        { tabId: 'remote-term:3', serverId: 'srv-1', serverName: 'prod', dir: '/x', docked: 'yes' },
+      ],
+    })!
+    expect(valid.nextRemoteTerminal).toBe(4)
+    expect(valid.remoteExpanded).toEqual(['srv-1', 'srv-1|/etc'])
+    expect(valid.remoteTerminals).toEqual([
+      { tabId: 'remote-term:1', serverId: 'srv-1', serverName: 'prod', dir: '/var/www', docked: true },
+    ])
+    expect(sanitizeState({ ...base, nextRemoteTerminal: 'x' })?.nextRemoteTerminal).toBe(1)
+    expect(makeDefaultState().nextRemoteTerminal).toBe(1)
+    expect(makeDefaultState().remoteTerminals).toEqual([])
+  })
+
   it('tabOpenIn: a tab is open until it is truly closed, wherever it lives', () => {
     let s = state()
     const leaf = s.splits as { id: string; tabs: { id: string }[] }
@@ -849,10 +893,13 @@ describe('pty helpers', () => {
   it('falls back from an empty SHELL to a usable shell', () => {
     const previous = process.env.SHELL
     try {
+      // On Windows the resolver always picks PowerShell (no SHELL to honor);
+      // POSIX falls back to the login shell constant.
+      const expected = process.platform === 'win32' ? 'powershell.exe' : '/bin/bash'
       process.env.SHELL = ''
-      expect(defaultShell()).toBe('/bin/bash')
+      expect(defaultShell()).toBe(expected)
       delete process.env.SHELL
-      expect(defaultShell()).toBe('/bin/bash')
+      expect(defaultShell()).toBe(expected)
     } finally {
       if (previous === undefined) delete process.env.SHELL
       else process.env.SHELL = previous
@@ -1153,7 +1200,7 @@ describe('side card preferences', () => {
   it('falls back per-field when a stored field is malformed', async () => {
     expect(await loadPrefs(wire({ openByDefault: 'yes', defaultWidthPercent: 33, autoOpenSubagent: 'no', agentTerminalTools: 'yes' })))
       .toEqual({
-        openByDefault: true,
+        openByDefault: false,
         defaultWidthPercent: 33,
         autoOpenSubagent: true,
         autoOpenJobs: true,
@@ -1258,10 +1305,11 @@ describe('side card preferences', () => {
     expect(snapshot.sessionId).toBe('fresh-session')
     expect(snapshot.state?.panelOpen).toBe(false)
     expect(snapshot.state?.width).toBe(400)
-    // The default prefs keep the panel open.
+    // The default prefs keep the panel COLLAPSED (the openByDefault=false
+    // baseline patch: the side card opens closed for new conversations).
     const openStore = createSidebarStore()
     openStore.setSession('another-fresh')
-    expect(openStore.getSnapshot().state?.panelOpen).toBe(true)
+    expect(openStore.getSnapshot().state?.panelOpen).toBe(false)
   })
 
   it('seeds a brand-new session COLLAPSED on narrow viewports (the panel is a full-screen drawer there)', () => {
@@ -1275,8 +1323,9 @@ describe('side card preferences', () => {
     }
     try {
       const store = createSidebarStore()
-      // Default prefs say openByDefault: true — the narrow viewport overrides
-      // it for the FIRST seeding only (a later user expansion persists).
+      // Default prefs keep the panel collapsed; the narrow viewport would
+      // override an open default for the FIRST seeding only (a later user
+      // expansion persists).
       store.setSession('narrow-fresh')
       expect(store.getSnapshot().state?.panelOpen).toBe(false)
       // The width seeding still follows the window (clamped to the floor).

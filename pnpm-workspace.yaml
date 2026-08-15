@@ -5,8 +5,10 @@ packages:
 # (no source compilation on supported platforms); pnpm 10+ blocks dependency
 # build scripts unless approved.
 allowBuilds:
+  cpu-features: true
   node-pty: true
   protobufjs: true
+  ssh2: true
 
 minimumReleaseAgeExclude:
   - '@deepseek-ai/cordis-plugin-include@1.0.5-rc.1'

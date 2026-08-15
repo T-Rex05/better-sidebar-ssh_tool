@@ -25,8 +25,16 @@ type EditorLoad =
   | { status: 'ready'; viewer: FileViewerDescriptor; content?: string; truncated?: boolean; mediaUrl?: string; customData?: unknown }
   | { status: 'binary' }
 
-export function EditorHost(props: { ctx: Context; store: SidebarStore; scope: SessionScope; path: string; title: string }) {
-  const { ctx, store, scope, path, title } = props
+export function EditorHost(props: {
+  ctx: Context
+  store: SidebarStore
+  scope: SessionScope
+  path: string
+  title: string
+  /** Present on remote files: routes reads/writes through the remote API. */
+  remote?: { serverId: string; serverName: string }
+}) {
+  const { ctx, store, scope, path, title, remote } = props
   const [load, setLoad] = useState<EditorLoad>({ status: 'loading' })
 
   useEffect(() => {
@@ -36,6 +44,28 @@ export function EditorHost(props: { ctx: Context; store: SidebarStore; scope: Se
     const controller = new AbortController()
     setLoad({ status: 'loading' })
     const mediaUrlOf = (): string => mediaUrl(scope, path)
+    // Remote files load through the SFTP API: only fsRead-strategy viewers
+    // (code/markdown/html) can render them — image/pdf/office degrade to a
+    // remote download. The write-back hook pushes edits to the server.
+    if (remote !== undefined) {
+      api.remoteFsRead(remote.serverId, path).then((result) => {
+        if (cancelled) return
+        if (result.kind === 'binary') {
+          setLoad({ status: 'binary' })
+          return
+        }
+        const viewer = ctx.betterSidebar?.matchFileViewer(path)
+        if (viewer === undefined || viewer.fetchStrategy !== 'fsRead') {
+          setLoad({ status: 'binary' })
+          return
+        }
+        setLoad({ status: 'ready', viewer, content: result.content, truncated: result.truncated })
+      }).catch((error: unknown) => {
+        if (cancelled) return
+        setLoad({ status: 'error', message: error instanceof Error ? error.message : String(error) })
+      })
+      return () => { cancelled = true; controller.abort() }
+    }
     const apply = (action: EditorLoadAction): void => {
       if (cancelled) return
       switch (action.kind) {
@@ -81,16 +111,23 @@ export function EditorHost(props: { ctx: Context; store: SidebarStore; scope: Se
     }
     apply(planFirstMatch(ctx.betterSidebar?.matchFileViewer(path), mediaUrlOf))
     return () => { cancelled = true; controller.abort() }
-  }, [scope.sessionId, scope.cwd, path, ctx])
+  }, [scope.sessionId, scope.cwd, path, ctx, remote?.serverId])
+
+  // The remote write-back hook: the viewer's save/sync button pushes edits
+  // to the server (the sync button). Local files keep the viewer's default.
+  const writeFile = remote === undefined
+    ? undefined
+    : (content: string): Promise<unknown> => api.remoteFsWrite(remote.serverId, path, content)
 
   return (
     <div className={css.editor}>
       <div className={css.editorHeader}>
         <span className={css.editorTitle} title={path}>{title}</span>
+        {remote !== undefined && <span className={css.remoteEditorBadge}>{remote.serverName}</span>}
       </div>
       {load.status === 'loading' && <div className={css.editorPlaceholder}>{t('loading')}</div>}
       {load.status === 'error' && <div className={css.editorError}>{load.message}</div>}
-      {load.status === 'binary' && <BinaryDownload scope={scope} path={path} />}
+      {load.status === 'binary' && <BinaryDownload scope={scope} path={path} remote={remote} />}
       {load.status === 'ready' && createElement(load.viewer.component, {
         ctx, store, scope, path, title,
         viewerId: load.viewer.id,
@@ -98,6 +135,8 @@ export function EditorHost(props: { ctx: Context; store: SidebarStore; scope: Se
         truncated: load.truncated,
         mediaUrl: load.mediaUrl,
         customData: load.customData,
+        writeFile,
+        remote: remote !== undefined,
       })}
     </div>
   )

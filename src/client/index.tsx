@@ -22,6 +22,7 @@ import { registerLinkInterception } from './link-intercept.ts'
 import { registerImeGuard } from './ime-guard.ts'
 import { loadPrefs } from './prefs.ts'
 import { SideCardSection } from './SideCardSection.tsx'
+import { RemoteTerminalManager } from './remote-terminal-manager.ts'
 import { api } from './api.ts'
 import { LOCALE_NS, attachLocale, t, zh, en } from './locales.ts'
 import css from './sidebar.module.css'
@@ -65,6 +66,9 @@ export function apply(ctx: Context): void {
   // are ready by the time the sidebar renders.
   const service = createBetterSidebarService(sidebarStore)
   ctx.provide('betterSidebar', service)
+  // The remote terminal manager: center view-ring tabs (next to 对话/轨迹)
+  // plus the center dock (bottom-panel workbench) with VSCode-style splits.
+  const remoteTerminalManager = new RemoteTerminalManager(ctx, sidebarStore)
   // Register the plugin's own built-in tabs and viewers through the same
   // service (eating our own dogfood). The disposer unregisters them on
   // fiber disposal (HMR-safe).
@@ -93,6 +97,7 @@ export function apply(ctx: Context): void {
     // registered by a previous fiber (HMR) and drop the in-memory load cache
     // so the next lazy open re-fetches the current chunk scripts.
     resetChunks()
+    ctx.effect(() => remoteTerminalManager.start(), 'dsh-better-sidebar: remote terminal manager')
     ctx.effect(() => {
       let disposed = false
       let root: Root | undefined

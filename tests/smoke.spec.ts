@@ -3,7 +3,7 @@
  * exercises the real integrations — route registration, git against the
  * actual repository, and a real directory listing. Runs with `pnpm test`.
  */
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -62,8 +62,8 @@ describe('host plugin smoke', () => {
       get: () => undefined,
     }
     apply(ctx as never)
-    expect(routes.map(route => route.path)).toEqual(['/sidebar/api', '/sidebar/bundle', '/sidebar/file', '/sidebar/html'])
-    expect(upgrades.map(route => route.path)).toEqual(['/sidebar/ws/terminal', '/sidebar/ws/agent-terminals'])
+    expect(routes.map(route => route.path)).toEqual(['/sidebar/api', '/sidebar/bundle', '/sidebar/file', '/sidebar/html', '/sidebar/remote-file'])
+    expect(upgrades.map(route => route.path)).toEqual(['/sidebar/ws/terminal', '/sidebar/ws/agent-terminals', '/sidebar/ws/remote-terminal'])
     // Teardown runs without throwing (pty manager has nothing open).
     for (const cleanup of effects) cleanup()
   })
@@ -120,8 +120,16 @@ describe('host plugin smoke', () => {
       expect(second).not.toBe(first)
       expect(manager.keysOf('s1')).toHaveLength(1)
       // After the shell exits, a reconnect respawns instead of reusing the dead handle.
+      // ConPTY spawn can take seconds on headless Windows: wait for the shell
+      // banner so the exit command is not dropped into a not-yet-ready pty.
+      const bannerDeadline = Date.now() + 15_000
+      while (second.transcript === '' && Date.now() < bannerDeadline) {
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
       second.pty.write('exit\r')
-      const deadline = Date.now() + 5000
+      // PowerShell on ConPTY can take several seconds to process the exit
+      // command after the banner appears (profile/PSReadLine init).
+      const deadline = Date.now() + 15_000
       while (!second.exited && Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 100))
       }
@@ -132,14 +140,21 @@ describe('host plugin smoke', () => {
     } finally {
       manager.disposeAll()
     }
-  })
+  }, 30_000)
 
   it('pty manager: exited zombie handles do not consume the quota', async () => {
     const manager = new PtyManager(defaultShell(), 1)
     try {
       const first = manager.open('s3', 't1', process.cwd(), 80, 24)
+      // Wait for the shell banner (ConPTY spawn latency on headless Windows).
+      const bannerDeadline = Date.now() + 15_000
+      while (first.transcript === '' && Date.now() < bannerDeadline) {
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
       first.pty.write('exit\r')
-      const deadline = Date.now() + 5000
+      // PowerShell on ConPTY can take several seconds to process the exit
+      // command after the banner appears (profile/PSReadLine init).
+      const deadline = Date.now() + 15_000
       while (!first.exited && Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 100))
       }
@@ -151,7 +166,7 @@ describe('host plugin smoke', () => {
     } finally {
       manager.disposeAll()
     }
-  })
+  }, 30_000)
 
   it('pty manager: a reconnect within the grace period cancels the pending close', async () => {
     const manager = new PtyManager(defaultShell(), 3)
@@ -213,7 +228,9 @@ describe('git destructive operations (scratch repository)', () => {
   }
 
   const gitRun = (cwd: string, args: string[]): string => {
-    const result = spawnSync('git', ['-C', cwd, '--no-pager', '-c', 'color.ui=false', ...args], {
+    // autocrlf off: the scratch repos must behave platform-neutrally (the
+    // machine's global config may otherwise rewrite LF → CRLF on checkout).
+    const result = spawnSync('git', ['-C', cwd, '--no-pager', '-c', 'color.ui=false', '-c', 'core.autocrlf=false', ...args], {
       encoding: 'utf8',
       env: { ...process.env, ...FIXTURE_IDENTITY },
     })
@@ -227,6 +244,11 @@ describe('git destructive operations (scratch repository)', () => {
   const makeScratchRepo = (): string => {
     const dir = mkdtempSync(join(tmpdir(), 'dsh-sidebar-git-'))
     gitRun(dir, ['init', '-q'])
+    // Repo-local autocrlf: the machine's GLOBAL config may rewrite LF → CRLF
+    // on checkout (this repo itself was cloned that way); the scratch repos
+    // must behave platform-neutrally, and the src/git.ts helpers run plain
+    // git (no -c), so the setting must be persisted into the repo config.
+    gitRun(dir, ['config', 'core.autocrlf', 'false'])
     gitRun(dir, ['checkout', '-q', '-b', 'main'])
     writeFileSync(join(dir, 'a.txt'), 'one\ntwo\nthree\n')
     gitRun(dir, ['add', '-A'])
@@ -511,7 +533,7 @@ describe('side card settings routes', () => {
     expect(read.ok).toBe(true)
     expect(read.value).toEqual({
       value: {
-        openByDefault: true,
+        openByDefault: false,
         defaultWidthPercent: 30,
         autoOpenSubagent: true,
         autoOpenJobs: true,
@@ -685,4 +707,99 @@ describe('agent terminal tool gating', () => {
   })
 
 
+})
+
+describe('remote SSH API routes', () => {
+  // The server list lives under os.homedir(): point HOME/USERPROFILE at a
+  // temp dir so the smoke run never touches the real ~/.dsh config.
+  let homeDir: string
+  beforeEach(() => {
+    homeDir = mkdtempSync(join(tmpdir(), 'dsh-remote-smoke-'))
+    process.env.HOME = homeDir
+    process.env.USERPROFILE = homeDir
+  })
+  afterEach(() => {
+    rmSync(homeDir, { recursive: true, force: true })
+    delete process.env.HOME
+    delete process.env.USERPROFILE
+  })
+
+  const mount = (): SidebarWebRoute => {
+    const routes: SidebarWebRoute[] = []
+    const ctx = {
+      webRuntime: { trustedHosts: [] },
+      webServer: {
+        register: (route: SidebarWebRoute) => { routes.push(route); return () => {} },
+        registerUpgrade: (route: SidebarWebUpgradeRoute) => { void route; return () => {} },
+      },
+      sessions: { get: () => undefined },
+      tools: { register: () => () => {} },
+      effect: (fn: () => void | (() => void)) => { fn() },
+      inject: () => () => {},
+      get: () => undefined,
+    }
+    apply(ctx as never)
+    return routes.find(route => route.path === '/sidebar/api')!
+  }
+
+  const invoke = async (route: SidebarWebRoute, method: string, payload: unknown): Promise<{
+    ok: boolean
+    value?: Record<string, unknown> | null
+    error?: { code?: string; message?: string }
+  }> => {
+    const body = Buffer.from(JSON.stringify(payload))
+    const req = {
+      method: 'POST',
+      url: `/sidebar/api/${method}`,
+      headers: { host: '127.0.0.1:3080' },
+      [Symbol.asyncIterator]: async function* () { yield body },
+    } as never
+    const out: { status: number; body: string } = { status: 200, body: '' }
+    const res = {
+      writeHead: (status: number) => { out.status = status },
+      end: (chunk: unknown) => { out.body += String(chunk ?? '') },
+    } as never
+    await route.handler(req, res)
+    return JSON.parse(out.body) as { ok: boolean; value?: Record<string, unknown> | null; error?: { code?: string; message?: string } }
+  }
+
+  it('lists, saves and deletes servers with masked secrets over the wire', async () => {
+    const route = mount()
+    expect((await invoke(route, 'remote.servers', {})).value).toEqual({ servers: [] })
+
+    const saved = await invoke(route, 'remote.servers.save', {
+      name: 'prod',
+      host: '10.0.0.1',
+      port: 22,
+      username: 'deploy',
+      authType: 'password',
+      password: 's3cret',
+    })
+    expect(saved.ok).toBe(true)
+    const serverRow = (saved.value!.servers as Array<Record<string, unknown>>)[0]!
+    expect(serverRow).toMatchObject({ hasPassword: true, hasPassphrase: false })
+    expect('password' in serverRow).toBe(false)
+
+    const listed = await invoke(route, 'remote.servers', {})
+    expect((listed.value!.servers as Array<Record<string, unknown>>)).toHaveLength(1)
+
+    const deleted = await invoke(route, 'remote.servers.delete', { id: serverRow.id })
+    expect((deleted.value!.servers as Array<Record<string, unknown>>)).toHaveLength(0)
+  })
+
+  it('validates saves and reports unknown-server fs operations as remote-error', async () => {
+    const route = mount()
+    const bad = await invoke(route, 'remote.servers.save', { name: '', host: 'x', port: 22, username: 'u', authType: 'password' })
+    expect(bad.ok).toBe(false)
+    expect(bad.error?.code).toBe('bad-request')
+
+    // fs.tree for an unknown server id is refused before any connection.
+    const tree = await invoke(route, 'remote.fs.tree', { serverId: 'nope', path: '/' })
+    expect(tree.ok).toBe(false)
+    expect(tree.error?.code).toBe('remote-error')
+
+    // Releasing an unknown shell key is a benign no-op.
+    const close = await invoke(route, 'remote.shell.close', { sessionId: 's', tab: 't' })
+    expect(close.ok).toBe(true)
+  })
 })
