@@ -1,8 +1,6 @@
 /**
  * OpenSSH config support (HOST side): parse ~/.ssh/config into server
- * entries for the remote explorer, and resolve the ssh-agent connection
- * target the way OpenSSH itself would (SSH_AUTH_SOCK on POSIX, the
- * built-in OpenSSH agent's named pipe on Windows, Pageant as a fallback).
+ * entries for the remote explorer.
  *
  * The parser is deliberately minimal — it covers the fields the explorer
  * actually uses (HostName / User / Port / IdentityFile) plus ProxyJump
@@ -11,6 +9,8 @@
  * cannot connect). `Host *` blocks are treated as defaults: their fields
  * apply to every concrete alias that does not override them (the FIRST
  * matching block wins, matching OpenSSH's own semantics closely enough).
+ * Entries WITHOUT an IdentityFile are skipped too: authentication would
+ * have to fall back to the ssh-agent, which this build does not use.
  */
 import { readFile } from 'node:fs/promises'
 import { homedir, userInfo } from 'node:os'
@@ -125,10 +125,10 @@ export function expandHome(path: string): string {
 
 /**
  * Import ~/.ssh/config into the server list. Entries are skipped when a
- * server with the same NAME already exists or when the entry sits behind a
- * ProxyJump (ssh2 has no native jump-host support). IdentityFile entries
- * become private-key servers; everything else authenticates through the
- * ssh-agent. Persists the merged list.
+ * server with the same NAME already exists, when the entry sits behind a
+ * ProxyJump (ssh2 has no native jump-host support), or when it has no
+ * IdentityFile (authentication would have to fall back to the ssh-agent,
+ * which this build does not use). Persists the merged list.
  */
 export async function importFromSshConfig(): Promise<{ imported: number; skipped: number; reason?: string }> {
   const configPath = sshConfigPath()
@@ -148,7 +148,7 @@ export async function importFromSshConfig(): Promise<{ imported: number; skipped
   let imported = 0
   let skipped = 0
   for (const entry of entries) {
-    if (existingNames.has(entry.host) || entry.proxyJump !== undefined) {
+    if (existingNames.has(entry.host) || entry.proxyJump !== undefined || entry.identityFile === undefined) {
       skipped += 1
       continue
     }
@@ -158,23 +158,12 @@ export async function importFromSshConfig(): Promise<{ imported: number; skipped
       host: entry.hostName ?? entry.host,
       port: entry.port ?? 22,
       username: entry.user ?? username,
-      authType: entry.identityFile !== undefined ? 'privateKey' : 'agent',
-      ...(entry.identityFile !== undefined ? { privateKeyPath: expandHome(entry.identityFile) } : {}),
+      authType: 'privateKey',
+      privateKeyPath: expandHome(entry.identityFile),
     })
     existingNames.add(entry.host)
     imported += 1
   }
   if (imported > 0) await persistServers(servers)
   return { imported, skipped, reason: skipped > 0 ? 'skipped-proxy-or-duplicate' : undefined }
-}
-
-/**
- * The ssh-agent target for connectConfig: the named pipe of the Windows
- * OpenSSH agent service (ssh-agent on modern Windows; Pageant users can
- * change this to 'pageant'), or $SSH_AUTH_SOCK on POSIX (absent → the
- * caller's connect will fail with a clear agent error).
- */
-export function resolveAgentTarget(): string | undefined {
-  if (process.platform === 'win32') return '\\\\.\\pipe\\openssh-ssh-agent'
-  return process.env.SSH_AUTH_SOCK
 }

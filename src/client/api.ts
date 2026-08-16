@@ -55,7 +55,7 @@ export interface GitLogEntry {
 }
 
 /** Remote server auth method. */
-export type RemoteAuthType = 'password' | 'privateKey' | 'agent'
+export type RemoteAuthType = 'password' | 'privateKey'
 
 /** One remote server as the host returns it (secrets masked). */
 export interface RemoteServerSafe {

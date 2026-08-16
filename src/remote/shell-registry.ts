@@ -10,7 +10,6 @@
 import { Client, type ClientChannel, type ConnectConfig } from 'ssh2'
 import { readFile } from 'node:fs/promises'
 import { SidebarError } from '../wire.ts'
-import { resolveAgentTarget } from './ssh-config.ts'
 import type { RemoteServer } from './types.ts'
 import type { WebSocket } from 'ws'
 
@@ -279,10 +278,6 @@ async function connectConfig(server: RemoteServer, timeoutMs: number): Promise<C
   }
   if (server.authType === 'password') {
     config.password = server.password
-  } else if (server.authType === 'agent') {
-    const agent = resolveAgentTarget()
-    if (agent === undefined) throw new Error('ssh-agent auth requested but no agent is available')
-    config.agent = agent
   } else {
     const keyPath = server.privateKeyPath ?? ''
     if (keyPath === '') throw new Error('no private key path configured')

@@ -198,7 +198,7 @@ const flush = async (): Promise<void> => { await Promise.resolve(); await Promis
 import {
   deleteServer, loadServers, maskServer, remoteConfigPath, saveServer, validateServer,
 } from '../src/remote/config-store.ts'
-import { importFromSshConfig, parseSshConfig, resolveAgentTarget, sshConfigPath } from '../src/remote/ssh-config.ts'
+import { importFromSshConfig, parseSshConfig, sshConfigPath } from '../src/remote/ssh-config.ts'
 import { SftpPool } from '../src/remote/sftp-pool.ts'
 import { RemoteShellRegistry } from '../src/remote/shell-registry.ts'
 import { joinRemote, dirnameRemote } from '../src/remote/sftp-pool.ts'
@@ -375,7 +375,7 @@ describe('OpenSSH config import', () => {
     restoreHome()
   })
 
-  it('imports ~/.ssh/config entries, skipping duplicates and ProxyJump hosts', async () => {
+  it('imports ~/.ssh/config entries, skipping duplicates, ProxyJump and keyless hosts', async () => {
     mkdirSync(join(home, '.ssh'), { recursive: true })
     writeFileSync(join(home, '.ssh', 'config'), `
       Host gitlab
@@ -385,10 +385,12 @@ describe('OpenSSH config import', () => {
       Host jump-only
         HostName behind.example.com
         ProxyJump bastion
+      Host no-key
+        HostName agent-only.example.com
     `)
     const result = await importFromSshConfig()
     expect(result.imported).toBe(1)
-    expect(result.skipped).toBe(1)
+    expect(result.skipped).toBe(2) // ProxyJump + no IdentityFile
     const servers = await loadServers()
     expect(servers).toHaveLength(1)
     expect(servers[0]).toMatchObject({
@@ -402,35 +404,13 @@ describe('OpenSSH config import', () => {
     // A second import skips the now-existing name.
     const again = await importFromSshConfig()
     expect(again.imported).toBe(0)
-    expect(again.skipped).toBe(2)
+    expect(again.skipped).toBe(3)
   })
 
   it('importing without a config file is a benign no-op', async () => {
     const result = await importFromSshConfig()
     expect(result).toEqual({ imported: 0, skipped: 0, reason: 'no-config' })
     expect(await loadServers()).toEqual([])
-  })
-})
-
-describe('ssh-agent target resolution', () => {
-  it('resolves the Windows OpenSSH agent pipe or $SSH_AUTH_SOCK on POSIX', () => {
-    const platform = process.platform
-    if (platform === 'win32') {
-      expect(resolveAgentTarget()).toBe('\\\\.\\pipe\\openssh-ssh-agent')
-    } else {
-      const previous = process.env.SSH_AUTH_SOCK
-      try {
-        process.env.SSH_AUTH_SOCK = '/run/ssh-agent.sock'
-        expect(resolveAgentTarget()).toBe('/run/ssh-agent.sock')
-        delete process.env.SSH_AUTH_SOCK
-        expect(resolveAgentTarget()).toBeUndefined()
-      } finally {
-        if (previous === undefined) delete process.env.SSH_AUTH_SOCK
-        else process.env.SSH_AUTH_SOCK = previous
-      }
-    }
-    // sshConfigPath honors the SSH_CONFIG env override.
-    expect(sshConfigPath()).toMatch(/config$/)
   })
 })
 

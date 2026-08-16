@@ -5,7 +5,7 @@
  */
 
 /** Authentication method of one server entry. */
-export type RemoteAuthType = 'password' | 'privateKey' | 'agent'
+export type RemoteAuthType = 'password' | 'privateKey'
 
 /** One configured server (persisted to the host-side config file). */
 export interface RemoteServer {

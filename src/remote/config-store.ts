@@ -43,7 +43,7 @@ function parseServers(value: unknown): RemoteServer[] {
     if (typeof r.host !== 'string' || r.host === '') continue
     if (typeof r.port !== 'number' || !Number.isInteger(r.port)) continue
     if (typeof r.username !== 'string' || r.username === '') continue
-    if (r.authType !== 'password' && r.authType !== 'privateKey' && r.authType !== 'agent') continue
+    if (r.authType !== 'password' && r.authType !== 'privateKey') continue
     servers.push({
       id: r.id,
       name: r.name,
@@ -111,7 +111,7 @@ export function validateServer(input: unknown, existing?: RemoteServer): RemoteS
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new SidebarError('bad-request', 'server port must be an integer between 1 and 65535')
   }
-  const authType = r.authType === 'privateKey' ? 'privateKey' : (r.authType === 'agent' ? 'agent' : 'password')
+  const authType = r.authType === 'privateKey' ? 'privateKey' : 'password'
   const password = typeof r.password === 'string' && r.password !== '' ? r.password : undefined
   const privateKeyPath = typeof r.privateKeyPath === 'string' && r.privateKeyPath.trim() !== '' ? r.privateKeyPath.trim() : undefined
   const passphrase = typeof r.passphrase === 'string' && r.passphrase !== '' ? r.passphrase : undefined
@@ -125,7 +125,6 @@ export function validateServer(input: unknown, existing?: RemoteServer): RemoteS
   if (authType === 'privateKey' && privateKeyPath === undefined && (existing === undefined || existing.privateKeyPath === undefined || existing.privateKeyPath === '')) {
     throw new SidebarError('bad-request', 'a private key path is required for key authentication')
   }
-  // 'agent' needs no stored secret: the connection delegates to the ssh-agent.
   return {
     id: typeof r.id === 'string' && r.id !== '' ? r.id : randomUUID(),
     name,
