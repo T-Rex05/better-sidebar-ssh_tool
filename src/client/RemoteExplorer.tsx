@@ -22,7 +22,7 @@ import {
   IconCheckOutline16, IconChevronDownOutline14, IconChevronLeftOutline14, IconChevronRightOutline14, IconCodeOutline16,
   IconCopyOutline16, IconDownloadOutline16, IconFolderClose16, IconRefreshOutline16, IconTrashOutline16, Input, Menu, Modal, Button, writeClipboard,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import { api, type RemoteFsEntry, type RemoteFsListing, type RemoteServerSafe, type SessionScope } from './api.ts'
+import { api, remoteFileUrl, type RemoteFsEntry, type RemoteFsListing, type RemoteServerSafe, type SessionScope } from './api.ts'
 import type { Context } from '../context-types.ts'
 import type { SidebarStore } from './state.ts'
 import { getRemoteTerminalManager } from './remote-terminal-shared.tsx'
@@ -506,6 +506,16 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
     )
   }
 
+  /** Download one remote file (streams through /sidebar/remote-file). */
+  const downloadFile = useCallback((serverId: string, path: string): void => {
+    const a = document.createElement('a')
+    a.href = remoteFileUrl(serverId, path, true)
+    a.download = baseName(path)
+    document.body.append(a)
+    a.click()
+    a.remove()
+  }, [])
+
   /** The single-level directory listing (right pane). */
   const renderDir = (dir: CurrentDir): ReactNode => {
     const key = levelKey(dir.serverId, dir.path)
@@ -558,6 +568,15 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
             >
               <IconCodeOutline16 size={14} />
               <span className={css.explorerName}>{entry.name}</span>
+              <button
+                type='button'
+                className={css.remoteDownloadButton}
+                title={t('remoteDownload')}
+                aria-label={t('remoteDownload')}
+                onClick={(event) => { event.stopPropagation(); downloadFile(dir.serverId, entry.path) }}
+              >
+                <IconDownloadOutline16 size={14} />
+              </button>
             </div>
           )
         })
@@ -676,7 +695,7 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
         items={[
           ...(rowMenu?.isDir === true
             ? [{ id: 'session', label: t('remoteStartSession') }]
-            : []),
+            : [{ id: 'download', label: t('remoteDownload'), icon: <IconDownloadOutline16 size={14} /> }]),
           { id: 'rename', label: t('rename') },
           { id: 'delete', label: t('delete'), icon: <IconTrashOutline16 size={14} />, danger: true },
           { type: 'separator' as const, id: 'sep' },
@@ -696,6 +715,10 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
           }
           if (id === 'session') {
             startSession(target.serverId, target.serverName, target.path)
+            return
+          }
+          if (id === 'download') {
+            downloadFile(target.serverId, target.path)
             return
           }
           if (id === 'copy') {
