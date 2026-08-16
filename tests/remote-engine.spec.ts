@@ -639,6 +639,25 @@ describe('remote shell registry', () => {
     expect(FakeClient.instances[0]!.ended).toBe(true)
   })
 
+  it('replaces an exited shell on reopen (auto-reconnect semantics)', async () => {
+    const r = registry()
+    const first = await r.open('s1', 'srv-1', 't1', '', 80, 24)
+    const a = {
+      OPEN: 1, readyState: 1, send: vi.fn(), close: vi.fn(),
+    } as unknown as { OPEN: number; readyState: number; send: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }
+    r.attach(first, a as never)
+    // The SSH connection drops: the shell channel closes unexpectedly.
+    FakeClient.shellStream.emit('close', 1, undefined)
+    expect(first.exited).toBe(true)
+    // The viewer socket is closed with 1001 so the client reconnects.
+    expect(a.close).toHaveBeenCalledWith(1001, 'shell exited, reconnecting')
+    // Reopen: the dead handle is replaced with a FRESH shell.
+    const second = await r.open('s1', 'srv-1', 't1', '', 80, 24)
+    expect(second).not.toBe(first)
+    expect(second.exited).toBe(false)
+    expect(FakeClient.instances).toHaveLength(2)
+  })
+
   it('disposeAll closes every shell', async () => {
     const r = registry()
     await r.open('s1', 'srv-1', 't1', '', 80, 24)

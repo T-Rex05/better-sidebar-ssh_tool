@@ -849,6 +849,15 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
   // {type:'close'} kills the shell immediately. A bare socket drop leaves
   // the shell alive for the reconnect grace, so a refresh reattaches.
   const remoteWss = new WebSocketServer({ noServer: true })
+  // Keep the viewer sockets alive: a periodic protocol-level ping flushes
+  // dead links through NAT/proxies and detects silent drops promptly (the
+  // browser auto-pongs control frames, so no client code is involved).
+  const remotePing = setInterval(() => {
+    for (const ws of remoteWss.clients) {
+      if (ws.readyState === ws.OPEN) ws.ping()
+    }
+  }, 30_000)
+  remotePing.unref?.()
   ctx.effect(() => ctx.webServer.registerUpgrade({
     path: '/sidebar/ws/remote-terminal',
     handler: (req, socket, head) => {
@@ -867,6 +876,7 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
     agentPtyRegistry.disposeAll()
     sftpPool.closeAll()
     shellRegistry.disposeAll()
+    clearInterval(remotePing)
     wss.close()
     agentListWss.close()
     remoteWss.close()

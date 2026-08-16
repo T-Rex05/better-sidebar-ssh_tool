@@ -256,7 +256,7 @@ export const zh = {
   remoteBack: '返回服务器列表',
   remoteSwitchServer: '切换服务器',
   remoteUp: '上一级',
-  remoteSelectServer: '请选择左侧服务器',
+  remoteSelectServer: '选择服务器',
   pluginSentinelDesc: '条件驱动的 agent 唤醒系统：文件/进程/端口/HTTP/命令/webhook 传感器，条件达成自动唤醒休眠会话；注册「哨兵」Tab 展示服务器全局监控表',
 }
 
@@ -507,7 +507,7 @@ export const en: Record<keyof typeof zh, string> = {
   remoteBack: 'Back to server list',
   remoteSwitchServer: 'Switch server',
   remoteUp: 'Up one level',
-  remoteSelectServer: 'Select a server on the left',
+  remoteSelectServer: 'Select a server',
   pluginSentinelDesc: 'Condition-driven agent wakeup: file/process/port/http/command/webhook sensors wake dormant sessions when conditions fire; registers a "Sentinel" tab with the server-wide watch table',
 }
 

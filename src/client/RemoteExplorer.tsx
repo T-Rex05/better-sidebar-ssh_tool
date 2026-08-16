@@ -19,8 +19,8 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import clsx from 'clsx'
 import {
-  IconCheckOutline16, IconChevronLeftOutline14, IconChevronRightOutline14, IconCodeOutline16, IconCopyOutline16,
-  IconFolderClose16, IconRefreshOutline16, IconTrashOutline16, Input, Menu, Modal, Button, writeClipboard,
+  IconCheckOutline16, IconChevronDownOutline14, IconChevronLeftOutline14, IconChevronRightOutline14, IconCodeOutline16,
+  IconCopyOutline16, IconFolderClose16, IconRefreshOutline16, IconTrashOutline16, Input, Menu, Modal, Button, writeClipboard,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { api, type RemoteFsEntry, type RemoteFsListing, type RemoteServerSafe, type SessionScope } from './api.ts'
 import type { Context } from '../context-types.ts'
@@ -382,10 +382,17 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
             })),
             { type: 'separator' as const, id: 'sep' },
             { id: 'add', label: t('remoteAddServer'), icon: <IconServerOutline16 size={14} /> },
+            ...(server !== undefined
+              ? [{ id: 'edit-current', label: t('remoteEditServer'), icon: <IconServerOutline16 size={14} /> }]
+              : []),
           ]}
           onSelect={(id) => {
             setServerMenuOpen(false)
             if (id === 'add') { setFormServer('new'); return }
+            if (id === 'edit-current') {
+              if (server !== undefined) setFormServer(server)
+              return
+            }
             const target = servers?.find(candidate => candidate.id === id)
             if (target !== undefined) selectServer(target)
           }}
@@ -491,28 +498,42 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
     return <div className={css.remoteDirList}>{body}</div>
   }
 
-  /** One compact server row in the LEFT pane. */
-  const renderServer = (server: RemoteServerSafe): ReactNode => {
-    const conn = connections[server.id] ?? { status: 'idle' }
-    const isSelected = selected === server.id
-    return (
-      <div
-        key={server.id}
-        role='button'
-        tabIndex={0}
-        className={clsx(css.remoteServerRow, isSelected && css.remoteServerSelected)}
-        onClick={() => { selectServer(server) }}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectServer(server) }
+  /** The "pick a server" entry shown before a server is selected. */
+  const renderSelectServer = (): ReactNode => (
+    <div className={css.remoteSelectRow}>
+      <Menu
+        open={serverMenuOpen}
+        onClose={() => { setServerMenuOpen(false) }}
+        items={[
+          ...(servers ?? []).map(candidate => ({
+            id: candidate.id,
+            label: candidate.name + ' (' + candidate.username + '@' + candidate.host + ')',
+          })),
+          { type: 'separator' as const, id: 'sep' },
+          { id: 'add', label: t('remoteAddServer'), icon: <IconServerOutline16 size={14} /> },
+        ]}
+        onSelect={(id) => {
+          setServerMenuOpen(false)
+          if (id === 'add') { setFormServer('new'); return }
+          const target = servers?.find(candidate => candidate.id === id)
+          if (target !== undefined) selectServer(target)
         }}
-        onContextMenu={(event) => { openRowMenu(event, { serverId: server.id, serverName: server.name, path: conn.root ?? '', isDir: true }) }}
-      >
-        <span className={clsx(css.remoteStatus, css['remoteStatus' + conn.status.charAt(0).toUpperCase() + conn.status.slice(1)])} />
-        <span className={css.explorerName}>{server.name}</span>
-        <span className={css.remoteServerHost}>{server.username + '@' + server.host}</span>
-      </div>
-    )
-  }
+        portal
+        align='start'
+        anchor={(
+          <button
+            type='button'
+            className={css.remoteSelectButton}
+            onClick={() => { setServerMenuOpen(v => !v) }}
+          >
+            <IconServerOutline16 />
+            <span>{t('remoteSelectServer')}</span>
+            <IconChevronDownOutline14 />
+          </button>
+        )}
+      />
+    </div>
+  )
 
   return (
     <div className={css.remote}>
@@ -549,21 +570,14 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
           </div>
         )}
         {servers !== null && servers.length > 0 && (
-          <>
-            <div className={css.remoteServerList}>
-              {servers.map(renderServer)}
-            </div>
-            <div className={css.remoteDirPane}>
-              {current === null ? (
-                <div className={css.remoteDirEmpty}>{t('remoteSelectServer')}</div>
-              ) : (
-                <>
-                  {renderBreadcrumb(current)}
-                  {renderDir(current)}
-                </>
-              )}
-            </div>
-          </>
+          current === null
+            ? renderSelectServer()
+            : (
+              <>
+                {renderBreadcrumb(current)}
+                {renderDir(current)}
+              </>
+            )
         )}
       </div>
       <Menu

@@ -76,7 +76,10 @@ export class RemoteShellRegistry {
     return count
   }
 
-  /** Open (or reuse) one shell. Idempotent per key. */
+  /** Open (or reuse) one shell. Idempotent per key; an EXITED handle is
+   *  replaced with a fresh shell (auto-reconnect semantics — a dropped SSH
+   *  connection kills the shell, the client reattaches, and the registry
+   *  spawns a new one instead of handing back a dead handle). */
   async open(
     sessionId: string,
     serverId: string,
@@ -87,7 +90,22 @@ export class RemoteShellRegistry {
   ): Promise<RemoteShellHandle> {
     const key = sessionId + ':' + tabId
     const existing = this.handles.get(key)
-    if (existing !== undefined) return existing
+    if (existing !== undefined && !existing.exited) return existing
+    if (existing !== undefined) {
+      // The previous shell died (or is closing): drop it, then respawn.
+      this.handles.delete(key)
+      existing.closing = true
+      if (existing.closeTimer !== null) {
+        clearTimeout(existing.closeTimer)
+        existing.closeTimer = null
+      }
+      try { existing.stream.end() } catch { /* already closed */ }
+      existing.client.end()
+      for (const socket of [...existing.sockets]) {
+        try { socket.close(1001, 'shell exited, reconnecting') } catch { /* ignore */ }
+      }
+      existing.sockets.clear()
+    }
     if (this.sessionCount(sessionId) >= this.config.terminalsPerSession) {
       throw new SidebarError('remote-error', 'remote terminal quota reached for this session', 429)
     }
@@ -144,6 +162,16 @@ export class RemoteShellRegistry {
         appendTranscript(handle, text)
         for (const socket of [...handle.sockets]) {
           if (socket.readyState === socket.OPEN) socket.send(text)
+        }
+        // An UNEXPECTED exit (SSH connection dropped, shell died): close the
+        // viewer sockets so the client reconnects — open() then spawns a
+        // fresh shell instead of handing back this dead handle. A deliberate
+        // close() already closed the sockets (1000) and set handle.closing.
+        if (!handle.closing) {
+          for (const socket of [...handle.sockets]) {
+            try { socket.close(1001, 'shell exited, reconnecting') } catch { /* ignore */ }
+          }
+          handle.sockets.clear()
         }
         client.end()
       })
