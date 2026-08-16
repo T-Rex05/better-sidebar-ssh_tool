@@ -543,6 +543,27 @@ describe('sidebar state', () => {
     expect(makeDefaultState().remoteTerminals).toEqual([])
   })
 
+  it('sanitize migrates the OLD 400px default width to the compact default (user-dragged widths keep)', () => {
+    const base = {
+      panelOpen: true,
+      width: 400,
+      nextTerminal: 1,
+      activePane: 'pane:1',
+      expanded: [],
+      splits: {
+        kind: 'leaf',
+        id: 'pane:1',
+        active: null,
+        tabs: [{ id: 't', type: 'explorer', title: 'Explorer' }],
+      },
+    }
+    // The pre-tuning default (never explicitly chosen) moves to the new
+    // compact default; any other width is the user's own and is preserved.
+    expect(sanitizeState(base)?.width).toBe(260)
+    expect(sanitizeState({ ...base, width: 480 })?.width).toBe(480)
+    expect(sanitizeState({ ...base, width: 300 })?.width).toBe(300)
+  })
+
   it('tabOpenIn: a tab is open until it is truly closed, wherever it lives', () => {
     let s = state()
     const leaf = s.splits as { id: string; tabs: { id: string }[] }
@@ -584,9 +605,9 @@ describe('sidebar state', () => {
     g.window = { innerHeight: 800 }
     try {
       // The bottom panel must leave the center column at least PANEL_MIN
-      // tall (800 - 280), regardless of the right panel's open state.
-      expect(setBottomHeight(state(), 9999).bottomHeight).toBe(800 - 280)
-      expect(setBottomHeight({ ...state(), panelOpen: false }, 9999).bottomHeight).toBe(800 - 280)
+      // tall (800 - 240), regardless of the right panel's open state.
+      expect(setBottomHeight(state(), 9999).bottomHeight).toBe(800 - 240)
+      expect(setBottomHeight({ ...state(), panelOpen: false }, 9999).bottomHeight).toBe(800 - 240)
     } finally {
       if (previous === undefined) delete g.window
       else g.window = previous
@@ -762,8 +783,8 @@ describe('sidebar state', () => {
     const previous = g.window
     g.window = { innerHeight: 800 }
     try {
-      expect(sanitizeState({ ...base, panelOpen: true, bottomHeight: 9999 })?.bottomHeight).toBe(800 - 280)
-      expect(sanitizeState({ ...base, panelOpen: false, bottomHeight: 9999 })?.bottomHeight).toBe(800 - 280)
+      expect(sanitizeState({ ...base, panelOpen: true, bottomHeight: 9999 })?.bottomHeight).toBe(800 - 240)
+      expect(sanitizeState({ ...base, panelOpen: false, bottomHeight: 9999 })?.bottomHeight).toBe(800 - 240)
     } finally {
       if (previous === undefined) delete g.window
       else g.window = previous
@@ -986,7 +1007,9 @@ describe('produced-files derivation', () => {
 
 describe('persisted state sanitization', () => {
   it('accepts a well-formed state unchanged (node environment: no width clamp)', () => {
-    const state = makeDefaultState(400)
+    // 360 is a user-dragged width (not the old 400 default), so no migration
+    // rewrites it — the round trip must be an exact identity.
+    const state = makeDefaultState(360)
     const clean = sanitizeState(JSON.parse(JSON.stringify(state)))
     expect(clean).toEqual(state)
   })
@@ -1004,7 +1027,7 @@ describe('persisted state sanitization', () => {
   it('clamps undersized widths to the panel minimum', () => {
     const state = { ...makeDefaultState(400), width: 10 }
     const clean = sanitizeState(JSON.parse(JSON.stringify(state)))
-    expect(clean?.width).toBe(280)
+    expect(clean?.width).toBe(240)
   })
 
   it('rejects malformed shapes instead of crashing the panel', () => {
@@ -1304,7 +1327,7 @@ describe('side card preferences', () => {
     const snapshot = store.getSnapshot()
     expect(snapshot.sessionId).toBe('fresh-session')
     expect(snapshot.state?.panelOpen).toBe(false)
-    expect(snapshot.state?.width).toBe(400)
+    expect(snapshot.state?.width).toBe(260)
     // The default prefs keep the panel COLLAPSED (the openByDefault=false
     // baseline patch: the side card opens closed for new conversations).
     const openStore = createSidebarStore()
@@ -1329,7 +1352,7 @@ describe('side card preferences', () => {
       store.setSession('narrow-fresh')
       expect(store.getSnapshot().state?.panelOpen).toBe(false)
       // The width seeding still follows the window (clamped to the floor).
-      expect(store.getSnapshot().state?.width).toBe(280)
+      expect(store.getSnapshot().state?.width).toBe(240)
     } finally {
       if (original === undefined) delete (globalThis as Record<string, unknown>).window
       else (globalThis as Record<string, unknown>).window = original
@@ -1354,7 +1377,7 @@ describe('side card preferences', () => {
 
   it('derives the default width from the window percent with clamps', () => {
     expect(defaultWidthFor(1440, 30)).toBe(432)
-    expect(defaultWidthFor(800, 30)).toBe(280) // the panel floor
+    expect(defaultWidthFor(800, 30)).toBe(240) // the panel floor
     expect(defaultWidthFor(1440, 100)).toBe(1440) // the viewport cap
   })
 

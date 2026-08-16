@@ -106,9 +106,12 @@ export interface SidebarState {
   bottomSplits: SplitNode
 }
 
-export const PANEL_MIN = 280
+export const PANEL_MIN = 240
 export const PANEL_MAX = 640
-export const PANEL_DEFAULT = 400
+/** The compact default (matches the app's own left sidebar width): a wide
+ *  panel squeezes #root past the host's responsive threshold and makes the
+ *  native left sidebar flap open/closed while the width is dragged. */
+export const PANEL_DEFAULT = 260
 export const TAB_MAX_WIDTH = 160
 /** Bottom panel geometry contract (mirrors the width contract; the upper
  * bound is the viewport, enforced by {@link setBottomHeight}). */
@@ -904,9 +907,15 @@ export function sanitizeState(parsed: unknown): SidebarState | undefined {
   const bottomSplits = sanitizeNode(record.bottomSplits, seen, reid)
     ?? { kind: 'leaf' as const, id: uid('pane'), tabs: [], active: null }
   const maxWidth = typeof window !== 'undefined' ? window.innerWidth : Infinity
+  const rawWidth = Math.max(PANEL_MIN, Math.min(record.width, maxWidth))
+  // Width migration (desktop layout tuning): the OLD default of 400px is
+  // wider than the new compact default and was never explicitly chosen —
+  // states still carrying it move to PANEL_DEFAULT; a width the user
+  // actually dragged to (anything else) is preserved.
+  const width = rawWidth === 400 ? PANEL_DEFAULT : rawWidth
   return {
     panelOpen: record.panelOpen,
-    width: Math.max(PANEL_MIN, Math.min(record.width, maxWidth)),
+    width,
     // A stale duplicate pane id may have been re-ided; follow the rename so
     // new tabs still land in the pane the user was using.
     activePane: typeof record.activePane === 'string' ? (reid.get(record.activePane) ?? record.activePane) : null,

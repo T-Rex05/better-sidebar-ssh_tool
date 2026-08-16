@@ -121,9 +121,12 @@ export interface SidebarPrefs {
 }
 
 /** Range contract of {@link SidebarPrefs.defaultWidthPercent}. */
-export const WIDTH_PERCENT_MIN = 20
+export const WIDTH_PERCENT_MIN = 15
 export const WIDTH_PERCENT_MAX = 60
-export const WIDTH_PERCENT_DEFAULT = 30
+/** The compact default (~18% ≈ 260px at 1440 — matches the app's own left
+ *  sidebar; a wider default squeezes #root past the host's responsive
+ *  threshold and flaps the native left sidebar while the width is dragged). */
+export const WIDTH_PERCENT_DEFAULT = 18
 
 /** Range contract of {@link SidebarPrefs.terminalFontSize}. */
 export const TERMINAL_FONT_SIZE_MIN = 9
