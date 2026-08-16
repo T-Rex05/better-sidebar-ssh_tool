@@ -9,14 +9,14 @@
  * cannot connect). `Host *` blocks are treated as defaults: their fields
  * apply to every concrete alias that does not override them (the FIRST
  * matching block wins, matching OpenSSH's own semantics closely enough).
- * Entries WITHOUT an IdentityFile are skipped too: authentication would
- * have to fall back to the ssh-agent, which this build does not use.
+ * Imported servers always authenticate by KEY — the entry's IdentityFile
+ * or the standard ~/.ssh default key; entries with neither are skipped.
  */
 import { readFile } from 'node:fs/promises'
 import { homedir, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { loadServers, persistServers } from './config-store.ts'
+import { loadServers, persistServers, resolveDefaultKeyPath } from './config-store.ts'
 import type { RemoteServer } from './types.ts'
 
 /** One parsed Host block of an OpenSSH config. */
@@ -125,10 +125,11 @@ export function expandHome(path: string): string {
 
 /**
  * Import ~/.ssh/config into the server list. Entries are skipped when a
- * server with the same NAME already exists, when the entry sits behind a
- * ProxyJump (ssh2 has no native jump-host support), or when it has no
- * IdentityFile (authentication would have to fall back to the ssh-agent,
- * which this build does not use). Persists the merged list.
+ * server with the same NAME already exists or when the entry sits behind a
+ * ProxyJump (ssh2 has no native jump-host support). Authentication is
+ * ALWAYS key-based: the entry's IdentityFile when present, otherwise the
+ * standard ~/.ssh default key (id_ed25519 → id_ecdsa → id_rsa → id_dsa);
+ * an entry with neither is skipped. Persists the merged list.
  */
 export async function importFromSshConfig(): Promise<{ imported: number; skipped: number; reason?: string }> {
   const configPath = sshConfigPath()
@@ -145,11 +146,17 @@ export async function importFromSshConfig(): Promise<{ imported: number; skipped
   const username = (() => {
     try { return userInfo().username } catch { return 'root' }
   })()
+  const defaultKey = resolveDefaultKeyPath()
   let imported = 0
   let skipped = 0
   for (const entry of entries) {
-    if (existingNames.has(entry.host) || entry.proxyJump !== undefined || entry.identityFile === undefined) {
+    if (existingNames.has(entry.host) || entry.proxyJump !== undefined) {
       skipped += 1
+      continue
+    }
+    const keyPath = entry.identityFile !== undefined ? expandHome(entry.identityFile) : defaultKey
+    if (keyPath === undefined) {
+      skipped += 1 // no IdentityFile AND no default key: nothing to authenticate with
       continue
     }
     servers.push({
@@ -159,7 +166,7 @@ export async function importFromSshConfig(): Promise<{ imported: number; skipped
       port: entry.port ?? 22,
       username: entry.user ?? username,
       authType: 'privateKey',
-      privateKeyPath: expandHome(entry.identityFile),
+      privateKeyPath: keyPath,
     })
     existingNames.add(entry.host)
     imported += 1

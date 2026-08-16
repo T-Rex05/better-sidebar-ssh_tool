@@ -196,7 +196,7 @@ const flush = async (): Promise<void> => { await Promise.resolve(); await Promis
 // ── Config store (temp HOME) ───────────────────────────────────────────────
 
 import {
-  deleteServer, loadServers, maskServer, remoteConfigPath, saveServer, validateServer,
+  deleteServer, loadServers, maskServer, remoteConfigPath, resolveDefaultKeyPath, saveServer, validateServer,
 } from '../src/remote/config-store.ts'
 import { importFromSshConfig, parseSshConfig, sshConfigPath } from '../src/remote/ssh-config.ts'
 import { SftpPool } from '../src/remote/sftp-pool.ts'
@@ -306,6 +306,24 @@ describe('remote server config store', () => {
     mkdirSync(join(home, '.dsh'), { recursive: true })
     writeFileSync(remoteConfigPath(), 'not json{{{')
     expect(await loadServers()).toEqual([])
+  })
+
+  it('resolves the default ~/.ssh key (id_ed25519 first) and falls back for keyless saves', async () => {
+    // No keys in the temp HOME: nothing resolves, and a keyless private-key
+    // save is rejected (the message names the default-key fallback).
+    expect(resolveDefaultKeyPath()).toBeUndefined()
+    await expect(saveServer(serverInput({ authType: 'privateKey' }))).rejects.toThrow(SidebarError)
+    // Place the standard keys: id_ed25519 wins over id_rsa.
+    const sshDir = join(home, '.ssh')
+    mkdirSync(sshDir, { recursive: true })
+    writeFileSync(join(sshDir, 'id_rsa'), 'rsa')
+    expect(resolveDefaultKeyPath()).toBe(join(sshDir, 'id_rsa'))
+    writeFileSync(join(sshDir, 'id_ed25519'), 'ed')
+    expect(resolveDefaultKeyPath()).toBe(join(sshDir, 'id_ed25519'))
+    // A keyless save now resolves the default key automatically — the
+    // "no password, no path typing" flow.
+    const saved = await saveServer(serverInput({ authType: 'privateKey', privateKeyPath: '' }))
+    expect(saved.saved.privateKeyPath).toBe(join(sshDir, 'id_ed25519'))
   })
 })
 

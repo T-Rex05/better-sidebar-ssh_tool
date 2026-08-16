@@ -8,6 +8,7 @@
  * list (with a console warning) instead of throwing, so the plugin mounts
  * in any environment (tests, headless compositions, no HOME).
  */
+import { existsSync } from 'node:fs'
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
@@ -17,6 +18,23 @@ import type { RemoteServer, RemoteServerSafe } from './types.ts'
 
 /** File format version (bumped on shape changes; unknown versions reset). */
 const FILE_VERSION = 1
+
+/** The FIRST existing default OpenSSH private key in ~/.ssh (id_ed25519 →
+ *  id_ecdsa → id_rsa → id_dsa), or undefined when none exists. Lets a
+ *  private-key server be saved WITHOUT typing a key path (PyCharm-style:
+ *  the standard key just works). */
+export function resolveDefaultKeyPath(): string | undefined {
+  const sshDir = join(homedir(), '.ssh')
+  for (const name of ['id_ed25519', 'id_ecdsa', 'id_rsa', 'id_dsa']) {
+    const candidate = join(sshDir, name)
+    try {
+      if (existsSync(candidate)) return candidate
+    } catch {
+      // Unreadable dir: try the next candidate.
+    }
+  }
+  return undefined
+}
 
 /** The config file path (absolute). */
 export function remoteConfigPath(): string {
@@ -122,8 +140,15 @@ export function validateServer(input: unknown, existing?: RemoteServer): RemoteS
   if (authType === 'password' && password === undefined && (existing === undefined || existing.password === undefined || existing.password === '')) {
     throw new SidebarError('bad-request', 'a password is required for password authentication')
   }
-  if (authType === 'privateKey' && privateKeyPath === undefined && (existing === undefined || existing.privateKeyPath === undefined || existing.privateKeyPath === '')) {
-    throw new SidebarError('bad-request', 'a private key path is required for key authentication')
+  // An empty key path falls back to the standard ~/.ssh default key
+  // (id_ed25519 → id_ecdsa → id_rsa → id_dsa) — no password, no path typing.
+  const defaultKeyPath = authType === 'privateKey' && privateKeyPath === undefined
+    ? resolveDefaultKeyPath()
+    : undefined
+  const effectiveKeyPath = privateKeyPath ?? defaultKeyPath
+  if (authType === 'privateKey' && effectiveKeyPath === undefined
+    && (existing === undefined || existing.privateKeyPath === undefined || existing.privateKeyPath === '')) {
+    throw new SidebarError('bad-request', 'a private key path is required (and no default key exists in ~/.ssh)')
   }
   return {
     id: typeof r.id === 'string' && r.id !== '' ? r.id : randomUUID(),
@@ -133,7 +158,9 @@ export function validateServer(input: unknown, existing?: RemoteServer): RemoteS
     username,
     authType,
     ...(password !== undefined ? { password } : (existing !== undefined && existing.password !== undefined ? { password: existing.password } : {})),
-    ...(privateKeyPath !== undefined ? { privateKeyPath } : (existing !== undefined && existing.privateKeyPath !== undefined ? { privateKeyPath: existing.privateKeyPath } : {})),
+    ...(effectiveKeyPath !== undefined
+      ? { privateKeyPath: effectiveKeyPath }
+      : (existing !== undefined && existing.privateKeyPath !== undefined ? { privateKeyPath: existing.privateKeyPath } : {})),
     ...(passphrase !== undefined ? { passphrase } : (existing !== undefined && existing.passphrase !== undefined ? { passphrase: existing.passphrase } : {})),
     ...(rootPath !== undefined ? { rootPath } : (existing !== undefined && existing.rootPath !== undefined ? { rootPath: existing.rootPath } : {})),
   }

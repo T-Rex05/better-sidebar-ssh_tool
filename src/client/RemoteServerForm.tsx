@@ -35,7 +35,9 @@ export function RemoteServerForm(props: {
     host: server?.host ?? '',
     port: server?.port ?? 22,
     username: server?.username ?? '',
-    authType: server?.authType ?? 'password',
+    // Default to key auth with an EMPTY path: the host then uses the
+    // standard ~/.ssh default key automatically — no password to type.
+    authType: server?.authType ?? 'privateKey',
     password: '',
     privateKeyPath: server?.privateKeyPath ?? '',
     passphrase: '',
