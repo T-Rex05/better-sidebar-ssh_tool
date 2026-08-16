@@ -17,12 +17,24 @@
    top: 3) whose right end it really squeezes. */
 .toggleCluster {
   position: fixed;
-  top: 3px;
+  /* The DSH desktop shell's titlebar (window controls: minimize/maximize/
+     close) owns the top band — while the panel is COLLAPSED the cluster
+     must sit BELOW it (var(--dsh-desktop-titlebar-inset), 44px on desktop)
+     so the native buttons never cover the panel toggles; while OPEN it
+     returns to the panel's tab strip (see .toggleClusterOpen). z-index
+     raised far above the panel so no other layer can cover it. */
+  top: calc(var(--dsh-desktop-titlebar-inset, 0px) + 3px);
   right: 10px;
-  z-index: 55;
+  z-index: 2000;
   display: flex;
   flex-direction: row;
   gap: 4px;
+}
+
+/* The OPEN panel's cluster sits flush in the 34px tab strip (28px buttons
+   at top: 3) whose right end it really squeezes (the strip reserves 72px). */
+.toggleClusterOpen {
+  top: 3px;
 }
 
 /* The tab strip of the OPEN right panel reserves the cluster's width at its

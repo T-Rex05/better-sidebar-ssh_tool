@@ -59,17 +59,17 @@ const h = vi.hoisted(() => {
 
     realpath(path: string, cb: (err: Error | undefined, p: string) => void): void {
       this.record('realpath', [path])
-      if (this.failMethods.has('realpath')) { cb(new Error('realpath failed')); return }
+      if (this.failMethods.has('realpath')) { cb(new Error('realpath failed'), ''); return }
       cb(undefined, path === '.' ? this.home : path)
     }
     readdir(path: string, cb: (err: Error | undefined, list: unknown) => void): void {
       this.record('readdir', [path])
-      if (this.failMethods.has('readdir')) { cb(new Error('readdir failed')); return }
+      if (this.failMethods.has('readdir')) { cb(new Error('readdir failed'), []); return }
       cb(undefined, this.direntsByPath[path] ?? [])
     }
     stat(path: string, cb: (err: Error | undefined, attrs: unknown) => void): void {
       this.record('stat', [path])
-      if (this.failMethods.has('stat')) { cb(new Error('stat failed')); return }
+      if (this.failMethods.has('stat')) { cb(new Error('stat failed'), undefined); return }
       const hit = this.statResult[path] ?? { isDirectory: false, size: 10 }
       cb(undefined, {
         isDirectory: () => hit.isDirectory === true,
@@ -80,7 +80,7 @@ const h = vi.hoisted(() => {
     }
     open(path: string, _mode: string, cb: (err: Error | undefined, handle: Buffer) => void): void {
       this.record('open', [path])
-      if (this.failMethods.has('open')) { cb(new Error('open failed')); return }
+      if (this.failMethods.has('open')) { cb(new Error('open failed'), Buffer.alloc(0)); return }
       cb(undefined, Buffer.from('h'))
     }
     read(
@@ -88,7 +88,7 @@ const h = vi.hoisted(() => {
       cb: (err: Error | undefined, bytesRead: number) => void,
     ): void {
       this.record('read', [])
-      if (this.failMethods.has('read')) { cb(new Error('read failed')); return }
+      if (this.failMethods.has('read')) { cb(new Error('read failed'), 0); return }
       const chunk = Buffer.from(this.readPayload)
       const n = Math.min(length, Math.max(0, chunk.length - offset))
       chunk.copy(buffer, offset, 0, n)
@@ -172,7 +172,7 @@ const h = vi.hoisted(() => {
       cb(undefined, FakeClient.sftpImpl)
     }
     shell(_opts: unknown, cb: (err: Error | undefined, stream: FakeStream) => void): void {
-      if (FakeClient.failShell) { cb(new Error('shell failed')); return }
+      if (FakeClient.failShell) { cb(new Error('shell failed'), new h.FakeStream()); return }
       cb(undefined, FakeClient.shellStream)
     }
     end(): void {
@@ -310,7 +310,7 @@ describe('remote server config store', () => {
 
 // ── SFTP pool ──────────────────────────────────────────────────────────────
 
-const sftp = (): FakeSftp => FakeClient.sftpImpl
+const sftp = (): InstanceType<typeof FakeSftp> => FakeClient.sftpImpl
 
 const server = (patch: Partial<RemoteServer> = {}): RemoteServer => ({
   id: 'srv-1',

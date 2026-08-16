@@ -724,9 +724,11 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
         Always pinned to the viewport corner — inside the right panel's
         top-right while it is open, sitting flush in the tab strip whose
         right end it really squeezes (the strip reserves its width via CSS),
-        so the tabs genuinely yield space to it.
+        so the tabs genuinely yield space to it. While COLLAPSED it drops
+        below the desktop titlebar (see .toggleCluster in the CSS) so the
+        window controls never cover it.
       */}
-      <div className={css.toggleCluster}>
+      <div className={clsx(css.toggleCluster, state.panelOpen && css.toggleClusterOpen)}>
         {/*
           Narrow viewports merge the two workbenches into the one drawer —
           there is no bottom panel, so its toggle button is not offered.
