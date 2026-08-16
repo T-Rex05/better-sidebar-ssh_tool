@@ -1,8 +1,10 @@
 /**
  * SFTP connection pool for the remote explorer: one persistent ssh2 client
- * per server id, connected lazily on first use, with a per-server promise
- * chain (async mutex) serializing SFTP operations so many concurrent
- * directory expansions never flood one connection with channels. Idle
+ * per server id, connected lazily on first use. Operations on one
+ * connection are CONCURRENT up to {@link MAX_SFTP_CONCURRENCY} (ssh2
+ * multiplexes requests over the sftp channel; the cap keeps a directory
+ * explosion from flooding the connection, but parallel directory
+ * expansions no longer serialize behind each other's round trips). Idle
  * connections close after remoteIdleTimeoutMs and transparently reconnect
  * on the next operation; a dropped/broken connection is discarded and
  * re-established the same way.
@@ -18,6 +20,9 @@ export interface SftpPoolConfig {
   connectTimeoutMs: number
   idleTimeoutMs: number
 }
+
+/** Concurrent SFTP operations allowed per server connection. */
+export const MAX_SFTP_CONCURRENCY = 4
 
 /** One remote dirent row (structural mirror of ssh2's readdir payload). */
 interface RemoteDirent {
@@ -38,8 +43,10 @@ interface PoolEntry {
   sftp: SFTPWrapper | null
   /** Resolves the in-flight connect+shell open (serializes first use). */
   connecting: Promise<SFTPWrapper> | null
-  /** Tail of the per-server operation chain. */
-  queue: Promise<unknown>
+  /** In-flight operations on this connection (capped by MAX_SFTP_CONCURRENCY). */
+  inFlight: number
+  /** Operations parked while inFlight is at the cap. */
+  waiters: Array<() => void>
   lastUsed: number
   idleTimer: NodeJS.Timeout | null
   broken: boolean
@@ -147,7 +154,8 @@ export class SftpPool {
       client,
       sftp: null,
       connecting: null,
-      queue: Promise.resolve(),
+      inFlight: 0,
+      waiters: [],
       lastUsed: Date.now(),
       idleTimer: null,
       broken: false,
@@ -222,18 +230,38 @@ export class SftpPool {
     entry.idleTimer.unref?.()
   }
 
-  /** Run one SFTP operation serialized per server. */
+  /** Take a concurrency slot for one entry (resolve immediately while
+   *  under the cap, park otherwise; released by {@link releaseSlot}). */
+  private acquireSlot(entry: PoolEntry): Promise<void> {
+    if (entry.inFlight < MAX_SFTP_CONCURRENCY) {
+      entry.inFlight += 1
+      return Promise.resolve()
+    }
+    return new Promise(resolve => { entry.waiters.push(resolve) })
+  }
+
+  /** Release one concurrency slot and admit the next parked operation. */
+  private releaseSlot(entry: PoolEntry): void {
+    entry.inFlight = Math.max(0, entry.inFlight - 1)
+    const next = entry.waiters.shift()
+    if (next !== undefined) {
+      entry.inFlight += 1
+      next()
+    }
+  }
+
+  /** Run one SFTP operation, concurrent up to MAX_SFTP_CONCURRENCY per server. */
   async withSftp<T>(serverId: string, fn: (sftp: SFTPWrapper) => Promise<T>): Promise<T> {
     const entry = await this.ensureEntry(serverId)
-    const run = async (): Promise<T> => {
-      entry.lastUsed = Date.now()
-      this.scheduleIdle(entry)
+    await this.acquireSlot(entry)
+    entry.lastUsed = Date.now()
+    this.scheduleIdle(entry)
+    try {
       const sftp = await this.sftpOf(entry)
-      return fn(sftp)
+      return await fn(sftp)
+    } finally {
+      this.releaseSlot(entry)
     }
-    const next = entry.queue.then(run, run)
-    entry.queue = next.catch(() => {})
-    return next
   }
 
   /** Close one server's pooled connection (deleted server / teardown). */

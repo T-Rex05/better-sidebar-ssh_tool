@@ -448,29 +448,50 @@ describe('SFTP pool', () => {
     expect(FakeClient.instances).toHaveLength(2)
   })
 
-  it('serializes operations per server (mutex) and reconnects after an idle close', async () => {
+  it('runs operations concurrently up to the cap (no serialization)', async () => {
+    const p = pool()
+    p.syncServers([server()])
+    const seen: string[] = []
+    let inFlight = 0
+    let peak = 0
+    const gates: Array<() => void> = []
+    sftp().readdir = (path: string, cb: (err: Error | undefined, list: unknown) => void): void => {
+      seen.push(path)
+      inFlight += 1
+      peak = Math.max(peak, inFlight)
+      gates.push(() => {
+        inFlight -= 1
+        cb(undefined, [])
+      })
+    }
+    const paths = ['/a', '/b', '/c', '/d', '/e', '/f']
+    const all = paths.map(path => p.listDir('srv-1', path, 100))
+    // Let the 6 operations reach their readdir (each async hop needs a
+    // microtask; a macrotask flushes the whole chain): 4 in flight, 2 queued.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(peak).toBeLessThanOrEqual(4)
+    expect(gates).toHaveLength(4)
+    // Release the first batch: the two queued operations then run.
+    for (const gate of gates.splice(0)) gate()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(peak).toBeLessThanOrEqual(4)
+    expect(gates).toHaveLength(2)
+    for (const gate of gates.splice(0)) gate()
+    await Promise.all(all)
+    expect(seen.sort()).toEqual([...paths].sort())
+    expect(peak).toBeGreaterThan(1) // genuinely concurrent, not serialized
+  })
+
+  it('reconnects after an idle close', async () => {
     vi.useFakeTimers()
     try {
       const p = pool({ idleTimeoutMs: 50 })
       p.syncServers([server()])
-      const order: string[] = []
-      sftp().readdir = (path: string, cb: (err: Error | undefined, list: unknown) => void): void => {
-        order.push(path)
-        cb(undefined, [])
-      }
-      await Promise.all([
-        p.listDir('srv-1', '/a', 100),
-        p.listDir('srv-1', '/b', 100),
-        p.listDir('srv-1', '/c', 100),
-      ])
-      expect(order).toEqual(['/a', '/b', '/c'])
-      // Advance past the idle timeout: the pooled client is closed and
-      // the next operation opens a fresh one.
+      await p.listDir('srv-1', '/a', 100)
       await vi.advanceTimersByTimeAsync(100)
       expect(FakeClient.instances[0]!.ended).toBe(true)
-      await p.listDir('srv-1', '/d', 100)
+      await p.listDir('srv-1', '/b', 100)
       expect(FakeClient.instances).toHaveLength(2)
-      expect(order).toEqual(['/a', '/b', '/c', '/d'])
     } finally {
       vi.useRealTimers()
     }

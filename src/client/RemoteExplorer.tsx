@@ -5,11 +5,22 @@
  * tab.meta.remote set (EditorHost routes reads/writes through the remote
  * API); the row context menu offers rename / delete / copy path /
  * Start SSH Session in Directory (directories).
+ *
+ * Navigation: the selected server shows a breadcrumb bar above its tree —
+ * [⇤ server list] [server ▾] / seg / seg — every segment jumps back to
+ * that level (collapsing everything below), the server name opens the
+ * switch-server menu, and the trailing ↑ button goes up one level.
+ *
+ * Performance: levels are cached THREE ways — in-memory (per mount,
+ * instant revisit), localStorage (survives reloads; fresh entries render
+ * immediately and stale ones refresh in the background), and prefetch
+ * (the first PREFETCH_DIRS subdirectories load in the background when a
+ * directory is listed, so drilling down usually hits the cache).
  */
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import clsx from 'clsx'
 import {
-  IconCodeOutline16, IconCopyOutline16, IconFolderClose16, IconFolderOpen16,
+  IconCheckOutline16, IconChevronLeftOutline14, IconCodeOutline16, IconCopyOutline16, IconFolderClose16, IconFolderOpen16,
   IconRefreshOutline16, IconTrashOutline16, Input, Menu, Modal, Button, writeClipboard,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { api, type RemoteFsEntry, type RemoteServerSafe, type SessionScope } from './api.ts'
@@ -22,9 +33,23 @@ import { RemoteServerForm } from './RemoteServerForm.tsx'
 import { t } from './locales.ts'
 import css from './sidebar.module.css'
 
+/** How many subdirectories to prefetch after listing one level. */
+const PREFETCH_DIRS = 8
+/** Directories above this count skip prefetching (big listings). */
+const PREFETCH_PARENT_MAX = 80
+
+/** localStorage cache of loaded levels (key → entries + timestamp). */
+const DISK_CACHE_KEY = 'dsh-sidebar-remote-cache:v1'
+/** A cached level is served directly while younger than this; older ones
+ *  render instantly and refresh in the background. */
+const DISK_CACHE_TTL_MS = 60_000
+/** Cache size guard: levels beyond this are dropped wholesale. */
+const DISK_CACHE_MAX_LEVELS = 300
+
 interface LevelData {
   entries?: RemoteFsEntry[]
   error?: string
+  loading?: boolean
 }
 
 interface ServerConn {
@@ -40,6 +65,16 @@ interface RowMenuState {
   isDir: boolean
   x: number
   y: number
+}
+
+/** One disk-cached level. */
+interface DiskLevel {
+  at: number
+  entries: RemoteFsEntry[]
+}
+
+interface DiskCacheDoc {
+  levels: Record<string, DiskLevel>
 }
 
 /** The level key of one directory (serverId for the root row). */
@@ -62,6 +97,31 @@ function formatSize(size: number): string {
   return (size / 1024 / 1024).toFixed(1) + ' MB'
 }
 
+/** Read the persisted level cache (corrupt/missing → empty). */
+function readDiskCache(): Record<string, DiskLevel> {
+  try {
+    const raw = localStorage.getItem(DISK_CACHE_KEY)
+    if (raw === null) return {}
+    const doc = JSON.parse(raw) as Partial<DiskCacheDoc>
+    if (doc.levels === null || typeof doc.levels !== 'object') return {}
+    return doc.levels as Record<string, DiskLevel>
+  } catch {
+    return {}
+  }
+}
+
+/** Write one level into the persisted cache (best-effort, size-guarded). */
+function writeDiskLevel(key: string, entries: RemoteFsEntry[]): void {
+  try {
+    const doc: DiskCacheDoc = { levels: { ...readDiskCache() } }
+    if (Object.keys(doc.levels).length >= DISK_CACHE_MAX_LEVELS) doc.levels = {}
+    doc.levels[key] = { at: Date.now(), entries }
+    localStorage.setItem(DISK_CACHE_KEY, JSON.stringify(doc))
+  } catch {
+    // Quota/JSON failure: the cache is best-effort, never fatal.
+  }
+}
+
 export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope: SessionScope }) {
   const { ctx, store, scope } = props
   const [servers, setServers] = useState<RemoteServerSafe[] | null>(null)
@@ -70,6 +130,9 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
   const [data, setData] = useState<Record<string, LevelData>>({})
   const dataRef = useRef(data)
   const [selected, setSelected] = useState<string | null>(null)
+  /** Breadcrumb navigation: the segments BELOW the server root. */
+  const [nav, setNav] = useState<{ serverId: string; segments: string[] } | null>(null)
+  const [serverMenuOpen, setServerMenuOpen] = useState(false)
   const [rowMenu, setRowMenu] = useState<RowMenuState | null>(null)
   const [renaming, setRenaming] = useState<{ serverId: string; path: string; name: string } | null>(null)
   const [renamingBusy, setRenamingBusy] = useState(false)
@@ -96,13 +159,42 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
 
   useEffect(() => { void refreshServers() }, [refreshServers])
 
-  /** Load one remote level (root when path is undefined). */
-  const loadLevel = useCallback((serverId: string, path: string | undefined, opts?: { force?: boolean }): void => {
+  /**
+   * Load one remote level (root when path is undefined). Resolution order:
+   * in-memory data (instant) → persisted cache (instant; background refresh
+   * when stale) → network with a loading row. `force` always hits the
+   * network; `prefetch` disables the recursive prefetch (one level only).
+   */
+  const loadLevel = useCallback((serverId: string, path: string | undefined, opts?: { force?: boolean; prefetch?: boolean }): void => {
     const key = levelKey(serverId, path)
-    if (dataRef.current[key] !== undefined && opts?.force !== true) return
-    storeLevel(key, {})
-    api.remoteFsTree(serverId, path).then(listing => {
+    const current = dataRef.current[key]
+    if (current !== undefined && current.entries !== undefined && opts?.force !== true) return
+    if (current === undefined || opts?.force === true) {
+      const disk = readDiskCache()[key]
+      if (disk !== undefined && opts?.force !== true) {
+        // Render the cached listing immediately; refresh in the background
+        // when it is stale (or always refresh the ROOT so a reconnect sees
+        // the live tree — cheap, one round trip).
+        storeLevel(key, { entries: disk.entries })
+        if (Date.now() - disk.at < DISK_CACHE_TTL_MS && path !== undefined) return
+      } else {
+        storeLevel(key, { loading: true })
+      }
+    }
+    void fetchLevel(serverId, path, key, opts)
+  }, [storeLevel])
+
+  /** One network round trip; stores the result, persists it, prefetches. */
+  const fetchLevel = useCallback(async (
+    serverId: string,
+    path: string | undefined,
+    key: string,
+    opts?: { force?: boolean; prefetch?: boolean },
+  ): Promise<void> => {
+    try {
+      const listing = await api.remoteFsTree(serverId, path)
       storeLevel(key, { entries: listing.entries })
+      writeDiskLevel(key, listing.entries)
       setConnections(prev => ({
         ...prev,
         [serverId]: { status: 'connected', root: listing.path },
@@ -110,18 +202,25 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
       if (path === undefined && listing.path !== '') {
         storeLevel(serverId + '|' + listing.path, { entries: listing.entries })
       }
-    }).catch((error: unknown) => {
+      // Prefetch the first subdirectories (one level; the user drilling
+      // down then finds them cached — the whole point of "feels fast").
+      if (opts?.prefetch !== true && listing.entries.length <= PREFETCH_PARENT_MAX) {
+        const dirs = listing.entries.filter(entry => entry.isDir).slice(0, PREFETCH_DIRS)
+        for (const dir of dirs) loadLevel(serverId, dir.path, { prefetch: true })
+      }
+    } catch (error: unknown) {
       storeLevel(key, { error: error instanceof Error ? error.message : String(error) })
       setConnections(prev => ({
         ...prev,
         [serverId]: { status: 'error', error: error instanceof Error ? error.message : String(error) },
       }))
-    })
-  }, [storeLevel])
+    }
+  }, [loadLevel, storeLevel])
 
-  /** Select a server: connect and auto-expand its root. */
+  /** Select a server: connect (or re-read the cached root) and expand. */
   const selectServer = useCallback((server: RemoteServerSafe): void => {
     setSelected(server.id)
+    setNav({ serverId: server.id, segments: [] })
     setConnections(prev => ({ ...prev, [server.id]: { status: 'connecting' } }))
     loadLevel(server.id, undefined)
     const snapshot = store.getSnapshot().state
@@ -130,11 +229,74 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
     }
   }, [loadLevel, store])
 
-  const toggleDir = useCallback((serverId: string, path: string): void => {
+  /** Back to the server list: collapse the selected server's tree. */
+  const backToServers = useCallback((): void => {
+    if (selected === null) return
+    store.reduce(s => ({
+      ...s,
+      remoteExpanded: s.remoteExpanded.filter(key => !key.startsWith(selected + '|')),
+    }))
+    setSelected(null)
+    setNav(null)
+  }, [selected, store])
+
+  const toggleDir = useCallback((serverId: string, path: string, root: string | undefined): void => {
     const key = serverId + '|' + path
     loadLevel(serverId, path)
     store.reduce(s => toggleRemoteExpanded(s, key))
+    // Breadcrumb: the path relative to the server root (root unknown →
+    // the absolute path's segments; the root segment is then visible too).
+    let rel = path
+    if (root !== undefined && root !== '' && root !== '/' && path.startsWith(root)) {
+      rel = path.slice(root.length)
+    }
+    const segments = rel.split('/').filter(segment => segment !== '')
+    setNav({ serverId, segments })
   }, [loadLevel, store])
+
+  /** Jump the tree to one breadcrumb level (collapse everything below). */
+  const jumpTo = useCallback((serverId: string, segments: string[], root: string | undefined): void => {
+    const rootPath = root ?? '/'
+    const target = segments.length === 0
+      ? rootPath
+      : rootPath.replace(/\/+$/, '') + '/' + segments.join('/')
+    // Fold every expanded key strictly below the target, keep the rest.
+    store.reduce(s => {
+      let next = s.remoteExpanded.filter(key => {
+        if (key === serverId) return true
+        if (key.startsWith(serverId + '|')) {
+          const p = key.slice(serverId.length + 1)
+          return !(p.startsWith(target.replace(/\/+$/, '') + '/'))
+        }
+        return true
+      })
+      // Expand the ancestor chain down to the target.
+      const chain = [serverId]
+      let acc = rootPath.replace(/\/+$/, '')
+      for (const segment of segments) {
+        acc += '/' + segment
+        chain.push(serverId + '|' + acc)
+      }
+      for (const key of chain) {
+        if (!next.includes(key)) next = [...next, key]
+      }
+      return { ...s, remoteExpanded: next }
+    })
+    // Load every level on the chain (cache hits are instant). The root row
+    // itself is keyed by the bare serverId (path undefined).
+    loadLevel(serverId, undefined)
+    let acc = rootPath.replace(/\/+$/, '')
+    for (const segment of segments) {
+      acc += '/' + segment
+      loadLevel(serverId, acc)
+    }
+    setNav({ serverId, segments })
+  }, [loadLevel, store])
+
+  /** Up one level from the current breadcrumb position. */
+  const upOne = useCallback((serverId: string, segments: string[], root: string | undefined): void => {
+    jumpTo(serverId, segments.slice(0, -1), root)
+  }, [jumpTo])
 
   const refreshAll = useCallback((): void => {
     dataRef.current = {}
@@ -147,6 +309,17 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
       else loadLevel(key.slice(0, at), key.slice(at + 1), { force: true })
     }
   }, [refreshServers, loadLevel, store])
+
+  /** Auto-load whatever the persisted session has expanded (reload case). */
+  useEffect(() => {
+    const snapshot = store.getSnapshot().state
+    for (const key of snapshot?.remoteExpanded ?? []) {
+      const at = key.indexOf('|')
+      if (at === -1) loadLevel(key, undefined)
+      else loadLevel(key.slice(0, at), key.slice(at + 1))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   /** Open a remote file in the shared editor (tab.meta.remote routes IO). */
   const openFile = useCallback((serverId: string, serverName: string, path: string): void => {
@@ -213,10 +386,84 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
 
   const serverNameOf = (serverId: string): string => servers?.find(s => s.id === serverId)?.name ?? serverId
 
-  const renderLevel = (serverId: string, path: string, depth: number): ReactNode => {
+  /** The breadcrumb bar of the selected server (above its tree). */
+  const renderBreadcrumb = (server: RemoteServerSafe, root: string | undefined): ReactNode => {
+    const segments = nav?.serverId === server.id ? nav.segments : []
+    return (
+      <div className={css.remoteBreadcrumb}>
+        <button
+          type='button'
+          className={css.remoteCrumbButton}
+          title={t('remoteBack')}
+          aria-label={t('remoteBack')}
+          onClick={backToServers}
+        >
+          <IconChevronLeftOutline14 />
+        </button>
+        <Menu
+          open={serverMenuOpen}
+          onClose={() => { setServerMenuOpen(false) }}
+          items={[
+            ...(servers ?? []).map(candidate => ({
+              id: candidate.id,
+              label: candidate.name + ' (' + candidate.username + '@' + candidate.host + ')',
+              ...(candidate.id === server.id ? { icon: <IconCheckOutline16 size={14} /> } : {}),
+            })),
+            { type: 'separator' as const, id: 'sep' },
+            { id: 'add', label: t('remoteAddServer'), icon: <IconServerOutline16 size={14} /> },
+          ]}
+          onSelect={(id) => {
+            setServerMenuOpen(false)
+            if (id === 'add') { setFormServer('new'); return }
+            const target = servers?.find(candidate => candidate.id === id)
+            if (target !== undefined) selectServer(target)
+          }}
+          portal
+          align='start'
+          anchor={(
+            <button
+              type='button'
+              className={css.remoteCrumbServer}
+              title={t('remoteSwitchServer')}
+              onClick={() => { setServerMenuOpen(v => !v) }}
+            >
+              <IconServerOutline16 size={14} />
+              <span className={css.explorerName}>{server.name}</span>
+            </button>
+          )}
+        />
+        {segments.map((segment, index) => (
+          <span key={index} className={css.remoteCrumbSeg}>
+            <span className={css.remoteCrumbSep}>/</span>
+            <button
+              type='button'
+              className={clsx(css.remoteCrumbButton, index === segments.length - 1 && css.remoteCrumbCurrent)}
+              title={'/' + segments.slice(0, index + 1).join('/')}
+              onClick={() => { jumpTo(server.id, segments.slice(0, index + 1), root) }}
+            >
+              {segment}
+            </button>
+          </span>
+        ))}
+        <span className={css.remoteCrumbSpacer} />
+        <button
+          type='button'
+          className={css.remoteCrumbButton}
+          title={t('remoteUp')}
+          aria-label={t('remoteUp')}
+          disabled={segments.length === 0}
+          onClick={() => { upOne(server.id, segments, root) }}
+        >
+          <IconChevronLeftOutline14 className={css.remoteUpIcon} />
+        </button>
+      </div>
+    )
+  }
+
+  const renderLevel = (serverId: string, path: string, root: string | undefined, depth: number): ReactNode => {
     const key = levelKey(serverId, path)
     const level = data[key]
-    if (level === undefined) {
+    if (level === undefined || level.loading === true) {
       return <div className={css.explorerRow} style={{ paddingLeft: depth * 22 + 6 }}>{t('loading')}</div>
     }
     if (level.error !== undefined) {
@@ -240,16 +487,16 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
               tabIndex={0}
               className={clsx(css.explorerRow, css.explorerDir, entry.hidden && css.explorerHidden)}
               style={{ paddingLeft: depth * 22 + 6 }}
-              onClick={() => { toggleDir(serverId, entry.path) }}
+              onClick={() => { toggleDir(serverId, entry.path, root) }}
               onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggleDir(serverId, entry.path) }
+                if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggleDir(serverId, entry.path, root) }
               }}
               onContextMenu={(event) => { openRowMenu(event, { serverId, serverName: serverNameOf(serverId), path: entry.path, isDir: true }) }}
             >
               {isOpen ? <IconFolderOpen16 size={14} /> : <IconFolderClose16 size={14} />}
               <span className={css.explorerName}>{entry.name}</span>
             </div>
-            {isOpen && renderLevel(serverId, entry.path, depth + 1)}
+            {isOpen && renderLevel(serverId, entry.path, root, depth + 1)}
           </div>
         )
       }
@@ -308,6 +555,7 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
             {t('remoteConnectFailed') + ': ' + conn.error}
           </div>
         )}
+        {isSelected && isOpen && renderBreadcrumb(server, conn.root)}
         {isOpen && conn.root !== undefined && (
           <div
             className={css.explorerRow}
@@ -318,7 +566,7 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
             <span className={css.explorerName}>{baseName(conn.root)}</span>
           </div>
         )}
-        {isOpen && conn.root !== undefined && renderLevel(server.id, conn.root, 2)}
+        {isOpen && conn.root !== undefined && renderLevel(server.id, conn.root, conn.root, 2)}
       </div>
     )
   }
