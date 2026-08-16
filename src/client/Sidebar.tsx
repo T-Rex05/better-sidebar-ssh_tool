@@ -721,14 +721,13 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
       {/*
         The persistent toggle cluster at the top-right corner: the bottom
         panel's button (bottom glyph) LEFT of the right panel's (side glyph).
-        Always pinned to the viewport corner — inside the right panel's
-        top-right while it is open, sitting flush in the tab strip whose
-        right end it really squeezes (the strip reserves its width via CSS),
-        so the tabs genuinely yield space to it. While COLLAPSED it drops
-        below the desktop titlebar (see .toggleCluster in the CSS) so the
-        window controls never cover it.
+        Always pinned to the viewport corner — below the desktop titlebar
+        (see .toggleCluster in the CSS) so the window controls never cover
+        it; the OPEN panel starts below the titlebar too, so the cluster
+        rides flush in its tab strip (whose right end it really squeezes —
+        the strip reserves its width via CSS, the tabs yield space to it).
       */}
-      <div className={clsx(css.toggleCluster, state.panelOpen && css.toggleClusterOpen)}>
+      <div className={css.toggleCluster}>
         {/*
           Narrow viewports merge the two workbenches into the one drawer —
           there is no bottom panel, so its toggle button is not offered.
