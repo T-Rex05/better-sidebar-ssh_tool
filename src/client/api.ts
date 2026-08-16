@@ -55,7 +55,7 @@ export interface GitLogEntry {
 }
 
 /** Remote server auth method. */
-export type RemoteAuthType = 'password' | 'privateKey'
+export type RemoteAuthType = 'password' | 'privateKey' | 'agent'
 
 /** One remote server as the host returns it (secrets masked). */
 export interface RemoteServerSafe {
@@ -258,6 +258,9 @@ export const api = {
   /** Test one (possibly unsaved) server record on a short-lived connection. */
   remoteTest: (server: RemoteServerInput) =>
     call<{ home: string }>('remote.servers.test', server as unknown as Record<string, unknown>),
+  /** Import ~/.ssh/config Host blocks into the server list. */
+  remoteImportSshConfig: () =>
+    call<{ imported: number; skipped: number; reason?: string }>('remote.servers.import-config', {}),
   /** List one remote directory level. */
   remoteFsTree: (serverId: string, path?: string, signal?: AbortSignal) =>
     call<RemoteFsListing>('remote.fs.tree', { serverId, ...(path !== undefined ? { path } : {}) }, signal),

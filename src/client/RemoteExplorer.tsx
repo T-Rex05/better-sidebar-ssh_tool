@@ -20,7 +20,7 @@ import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNo
 import clsx from 'clsx'
 import {
   IconCheckOutline16, IconChevronDownOutline14, IconChevronLeftOutline14, IconChevronRightOutline14, IconCodeOutline16,
-  IconCopyOutline16, IconFolderClose16, IconRefreshOutline16, IconTrashOutline16, Input, Menu, Modal, Button, writeClipboard,
+  IconCopyOutline16, IconDownloadOutline16, IconFolderClose16, IconRefreshOutline16, IconTrashOutline16, Input, Menu, Modal, Button, writeClipboard,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { api, type RemoteFsEntry, type RemoteFsListing, type RemoteServerSafe, type SessionScope } from './api.ts'
 import type { Context } from '../context-types.ts'
@@ -157,6 +157,7 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
   const [deleting, setDeleting] = useState<{ serverId: string; path: string; name: string; isDir: boolean } | null>(null)
   const [deletingBusy, setDeletingBusy] = useState(false)
   const [formServer, setFormServer] = useState<RemoteServerSafe | 'new' | null>(null)
+  const [importNote, setImportNote] = useState<string | null>(null)
 
   const storeLevel = useCallback((key: string, level: LevelData) => {
     dataRef.current = { ...dataRef.current, [key]: level }
@@ -302,6 +303,18 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
     void refreshServers()
     if (current !== null) void loadDir(current.serverId, current.path, { force: true })
   }, [refreshServers, current, loadDir])
+
+  /** Import ~/.ssh/config Host blocks; surfaces the result as a note. */
+  const importSshConfig = useCallback(async (): Promise<void> => {
+    setImportNote(null)
+    try {
+      const result = await api.remoteImportSshConfig()
+      setImportNote(t('remoteImportResult', { n: result.imported, m: result.skipped }))
+      await refreshServers()
+    } catch (error) {
+      setImportNote(error instanceof Error ? error.message : String(error))
+    }
+  }, [refreshServers])
 
   /** Open a remote file in the shared editor (tab.meta.remote routes IO). */
   const openFile = useCallback((serverId: string, serverName: string, path: string): void => {
@@ -551,6 +564,15 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
         <button
           type='button'
           className={css.iconButton}
+          aria-label={t('remoteImportConfig')}
+          title={t('remoteImportConfig')}
+          onClick={() => { void importSshConfig() }}
+        >
+          <IconDownloadOutline16 />
+        </button>
+        <button
+          type='button'
+          className={css.iconButton}
           aria-label={t('remoteAddServer')}
           title={t('remoteAddServer')}
           onClick={() => { setFormServer('new') }}
@@ -568,6 +590,7 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
         </button>
       </div>
       <div className={css.remoteBody}>
+        {importNote !== null && <div className={css.remoteImportNote}>{importNote}</div>}
         {servers === null && <div className={css.explorerEmpty}>{t('loading')}</div>}
         {loadError !== null && <div className={css.explorerError}>{loadError}</div>}
         {servers !== null && servers.length === 0 && (

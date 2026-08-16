@@ -13,6 +13,7 @@ import { readFile } from 'node:fs/promises'
 import { Client, type ConnectConfig, type SFTPWrapper } from 'ssh2'
 import type { Readable } from 'node:stream'
 import { SidebarError } from '../wire.ts'
+import { resolveAgentTarget } from './ssh-config.ts'
 import type { RemoteFsEntry, RemoteFsListing, RemoteFileRead, RemoteServer } from './types.ts'
 
 /** Pool knobs (resolved host config). */
@@ -74,6 +75,14 @@ async function connectConfig(server: RemoteServer, timeoutMs: number): Promise<C
   }
   if (server.authType === 'password') {
     config.password = server.password
+  } else if (server.authType === 'agent') {
+    // Delegate authentication to the ssh-agent (OpenSSH agent on Windows /
+    // $SSH_AUTH_SOCK on POSIX). A missing agent surfaces as a clear error.
+    const agent = resolveAgentTarget()
+    if (agent === undefined) {
+      throw new SidebarError('remote-error', 'server "' + server.name + '" uses ssh-agent auth but no agent is available', 400)
+    }
+    config.agent = agent
   } else {
     if (server.privateKeyPath === undefined || server.privateKeyPath === '') {
       throw new SidebarError('remote-error', 'server "' + server.name + '" has no private key path', 400)

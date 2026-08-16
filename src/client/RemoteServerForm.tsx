@@ -126,8 +126,12 @@ export function RemoteServerForm(props: {
           >
             <option value='password'>{t('remoteAuthPassword')}</option>
             <option value='privateKey'>{t('remoteAuthKey')}</option>
+            <option value='agent'>{t('remoteAuthAgent')}</option>
           </select>
         </div>
+        {form.authType === 'agent' && (
+          <div className={css.remoteFormNote}>{t('remoteAgentHint')}</div>
+        )}
         {form.authType === 'password' && (
           <div className={css.remoteFormRow}>
             <label className={css.remoteFormLabel}>{t('remotePassword')}</label>

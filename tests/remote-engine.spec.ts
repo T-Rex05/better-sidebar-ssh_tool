@@ -198,6 +198,7 @@ const flush = async (): Promise<void> => { await Promise.resolve(); await Promis
 import {
   deleteServer, loadServers, maskServer, remoteConfigPath, saveServer, validateServer,
 } from '../src/remote/config-store.ts'
+import { importFromSshConfig, parseSshConfig, resolveAgentTarget, sshConfigPath } from '../src/remote/ssh-config.ts'
 import { SftpPool } from '../src/remote/sftp-pool.ts'
 import { RemoteShellRegistry } from '../src/remote/shell-registry.ts'
 import { joinRemote, dirnameRemote } from '../src/remote/sftp-pool.ts'
@@ -305,6 +306,131 @@ describe('remote server config store', () => {
     mkdirSync(join(home, '.dsh'), { recursive: true })
     writeFileSync(remoteConfigPath(), 'not json{{{')
     expect(await loadServers()).toEqual([])
+  })
+})
+
+// ── OpenSSH config parsing + import ────────────────────────────────────────
+
+describe('OpenSSH config parsing', () => {
+  it('parses Host blocks with HostName/User/Port/IdentityFile (case-insensitive)', () => {
+    const entries = parseSshConfig(`
+      # comment line
+      Host web-prod
+        HostName 10.0.0.5
+        User deploy
+        Port 2222
+        IdentityFile ~/.ssh/web_prod
+
+      Host db
+        hostname db.internal
+        user back
+    `)
+    expect(entries).toEqual([
+      { host: 'web-prod', hostName: '10.0.0.5', user: 'deploy', port: 2222, identityFile: '~/.ssh/web_prod' },
+      { host: 'db', hostName: 'db.internal', user: 'back' },
+    ])
+  })
+
+  it('applies Host * defaults to concrete aliases (first match wins)', () => {
+    const entries = parseSshConfig(`
+      Host *
+        User common
+        IdentityFile ~/.ssh/id_default
+      Host app
+        HostName app.example.com
+      Host special
+        HostName sp.example.com
+        User override
+    `)
+    expect(entries).toEqual([
+      { host: 'app', hostName: 'app.example.com', user: 'common', identityFile: '~/.ssh/id_default' },
+      { host: 'special', hostName: 'sp.example.com', user: 'override', identityFile: '~/.ssh/id_default' },
+    ])
+  })
+
+  it('skips wildcard aliases, flags ProxyJump entries, and tolerates junk lines', () => {
+    const entries = parseSshConfig(`
+      Host *.example.com
+        HostName x
+      Host jumpy
+        HostName real-host
+        ProxyJump bastion
+      SomeUnknownKeyword value
+      Host plain
+    `)
+    expect(entries).toEqual([
+      { host: 'jumpy', hostName: 'real-host', proxyJump: 'bastion' },
+      { host: 'plain' },
+    ])
+  })
+})
+
+describe('OpenSSH config import', () => {
+  let home: string
+  beforeEach(() => {
+    home = withTempHome()
+    ;(globalThis as Record<string, unknown>).__dshTempHome = home
+  })
+  afterEach(() => {
+    restoreHome()
+  })
+
+  it('imports ~/.ssh/config entries, skipping duplicates and ProxyJump hosts', async () => {
+    mkdirSync(join(home, '.ssh'), { recursive: true })
+    writeFileSync(join(home, '.ssh', 'config'), `
+      Host gitlab
+        HostName gitlab.example.com
+        User git
+        IdentityFile ~/.ssh/gitlab
+      Host jump-only
+        HostName behind.example.com
+        ProxyJump bastion
+    `)
+    const result = await importFromSshConfig()
+    expect(result.imported).toBe(1)
+    expect(result.skipped).toBe(1)
+    const servers = await loadServers()
+    expect(servers).toHaveLength(1)
+    expect(servers[0]).toMatchObject({
+      name: 'gitlab',
+      host: 'gitlab.example.com',
+      port: 22,
+      username: 'git',
+      authType: 'privateKey',
+      privateKeyPath: join(home, '.ssh', 'gitlab'),
+    })
+    // A second import skips the now-existing name.
+    const again = await importFromSshConfig()
+    expect(again.imported).toBe(0)
+    expect(again.skipped).toBe(2)
+  })
+
+  it('importing without a config file is a benign no-op', async () => {
+    const result = await importFromSshConfig()
+    expect(result).toEqual({ imported: 0, skipped: 0, reason: 'no-config' })
+    expect(await loadServers()).toEqual([])
+  })
+})
+
+describe('ssh-agent target resolution', () => {
+  it('resolves the Windows OpenSSH agent pipe or $SSH_AUTH_SOCK on POSIX', () => {
+    const platform = process.platform
+    if (platform === 'win32') {
+      expect(resolveAgentTarget()).toBe('\\\\.\\pipe\\openssh-ssh-agent')
+    } else {
+      const previous = process.env.SSH_AUTH_SOCK
+      try {
+        process.env.SSH_AUTH_SOCK = '/run/ssh-agent.sock'
+        expect(resolveAgentTarget()).toBe('/run/ssh-agent.sock')
+        delete process.env.SSH_AUTH_SOCK
+        expect(resolveAgentTarget()).toBeUndefined()
+      } finally {
+        if (previous === undefined) delete process.env.SSH_AUTH_SOCK
+        else process.env.SSH_AUTH_SOCK = previous
+      }
+    }
+    // sshConfigPath honors the SSH_CONFIG env override.
+    expect(sshConfigPath()).toMatch(/config$/)
   })
 })
 

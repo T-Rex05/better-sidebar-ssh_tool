@@ -41,6 +41,7 @@ import { registerTools } from './tools.ts'
 import { buildJobsApi, type SidebarJobsRoutes } from './jobs-routes.ts'
 import { readJsonBody, requireString, SidebarError, writeError, writeJson, writeOk } from './wire.ts'
 import { deleteServer, loadServers, maskServer, saveServer, validateServer } from './remote/config-store.ts'
+import { importFromSshConfig } from './remote/ssh-config.ts'
 import type { RemoteServer } from './remote/types.ts'
 import { SftpPool } from './remote/sftp-pool.ts'
 import { RemoteShellRegistry } from './remote/shell-registry.ts'
@@ -454,6 +455,13 @@ function buildApi(
       const candidate = validateServer(input, existing)
       const { home } = await sftpPool.testConnection(candidate)
       return { home }
+    },
+    // Import ~/.ssh/config Host blocks into the server list (ssh-agent or
+    // IdentityFile auth; ProxyJump entries are skipped — no native support).
+    'remote.servers.import-config': async () => {
+      const result = await importFromSshConfig()
+      sftpPool.syncServers(await loadServers())
+      return result
     },
     'remote.fs.tree': async (payload) => {
       const serverId = requireString(payload, 'serverId')
