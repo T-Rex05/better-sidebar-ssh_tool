@@ -960,6 +960,13 @@
   transform: rotate(90deg);
 }
 
+/* The folder row's "enter" affordance: a right chevron at the row's end. */
+.remoteEnterHint {
+  flex: none;
+  margin-left: auto;
+  color: var(--dsw-alias-label-tertiary);
+}
+
 /* ── Remote server form (add / edit modal) ────────────────────────────── */
 
 .remoteFormModal {
