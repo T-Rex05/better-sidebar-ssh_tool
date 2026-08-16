@@ -1,20 +1,20 @@
 /**
- * The remote (SSH) explorer: TWO PANES — a narrow server list on the left
- * and the selected server's directory view on the right. Selecting a server
- * opens its ROOT ONLY (a single listing, PyCharm-like navigation); clicking
- * a folder enters it; the breadcrumb bar above the listing navigates back:
- * [⇤ list] [server ▾] / seg / seg [↑ up]. Files open the shared editor with
- * tab.meta.remote set; the row context menu offers rename / delete / copy
- * path / Start SSH Session in Directory (folders) / edit server (server
- * rows).
+ * The remote (SSH) explorer: a server picker + the selected server's
+ * NAVIGATION-STYLE directory view (single column, PyCharm-like). A
+ * "Select a server" button (top) opens the server list menu; selecting one
+ * shows ONLY that server's root listing. Clicking a folder enters it; the
+ * breadcrumb bar above the listing navigates back: [server ▾] / seg / seg
+ * [↑ up]. Files open the shared editor with tab.meta.remote set; the row
+ * context menu offers rename / delete / copy path / Start SSH Session in
+ * Directory (folders).
  *
  * Performance: listings are cached in-memory (instant revisit) and in
  * localStorage (fresh entries render immediately, stale ones refresh in the
- * background), and the first PREFETCH_DIRS subfolders of the CURRENT
- * directory load in the background so entering one is usually instant. The
- * root listing is keyed BOTH by the bare serverId (the connect response
- * arrives keyless) and by its real path, so the directory pane always finds
- * its data.
+ * background), the first PREFETCH_DIRS subfolders of the CURRENT directory
+ * load in the background, and the terminal chunk is warmed on mount so the
+ * first remote terminal skips the chunk download. The root listing is keyed
+ * BOTH by the bare serverId (the connect response arrives keyless) and by
+ * its real path, so the directory pane always finds its data.
  */
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import clsx from 'clsx'
@@ -26,6 +26,7 @@ import { api, type RemoteFsEntry, type RemoteFsListing, type RemoteServerSafe, t
 import type { Context } from '../context-types.ts'
 import type { SidebarStore } from './state.ts'
 import { getRemoteTerminalManager } from './remote-terminal-shared.tsx'
+import { loadChunk } from './chunk-loader.ts'
 import { IconServerOutline16 } from './icons.tsx'
 import { RemoteServerForm } from './RemoteServerForm.tsx'
 import { t } from './locales.ts'
@@ -173,6 +174,14 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
   }, [])
 
   useEffect(() => { void refreshServers() }, [refreshServers])
+
+  // Warm the terminal chunk: the first Start SSH Session in Directory would
+  // otherwise pay the chunk download + xterm parse ON TOP of the SSH
+  // handshake; preloading it here means the first terminal opens as fast as
+  // the connection allows (the handshake itself is the only wait left).
+  useEffect(() => {
+    void loadChunk('terminal').catch(() => { /* non-fatal: the real open retries */ })
+  }, [])
 
   /** One network round trip; stores (and persists) the result under BOTH
    *  keys for a root fetch (bare serverId + the real path). */
