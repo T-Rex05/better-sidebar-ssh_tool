@@ -1,17 +1,20 @@
 /**
- * The remote (SSH) explorer: a server list + NAVIGATION-STYLE directory
- * view (PyCharm-like). Selecting a server opens its ROOT ONLY — a single
- * directory listing, no tree expansion. Clicking a folder enters it (the
- * listing is replaced); the breadcrumb bar above the listing navigates back:
+ * The remote (SSH) explorer: TWO PANES — a narrow server list on the left
+ * and the selected server's directory view on the right. Selecting a server
+ * opens its ROOT ONLY (a single listing, PyCharm-like navigation); clicking
+ * a folder enters it; the breadcrumb bar above the listing navigates back:
  * [⇤ list] [server ▾] / seg / seg [↑ up]. Files open the shared editor with
  * tab.meta.remote set; the row context menu offers rename / delete / copy
- * path / Start SSH Session in Directory (folders).
+ * path / Start SSH Session in Directory (folders) / edit server (server
+ * rows).
  *
  * Performance: listings are cached in-memory (instant revisit) and in
- * localStorage (survives reloads; fresh entries render immediately, stale
- * ones refresh in the background), and the first PREFETCH_DIRS subfolders
- * of the CURRENT directory load in the background so entering one is
- * usually instant.
+ * localStorage (fresh entries render immediately, stale ones refresh in the
+ * background), and the first PREFETCH_DIRS subfolders of the CURRENT
+ * directory load in the background so entering one is usually instant. The
+ * root listing is keyed BOTH by the bare serverId (the connect response
+ * arrives keyless) and by its real path, so the directory pane always finds
+ * its data.
  */
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import clsx from 'clsx'
@@ -45,6 +48,8 @@ interface LevelData {
   entries?: RemoteFsEntry[]
   error?: string
   loading?: boolean
+  /** The real path of the listing (root fetches know it only post-response). */
+  path?: string
 }
 
 interface ServerConn {
@@ -73,6 +78,7 @@ interface RowMenuState {
 
 interface DiskLevel {
   at: number
+  path?: string
   entries: RemoteFsEntry[]
 }
 
@@ -114,11 +120,11 @@ function readDiskCache(): Record<string, DiskLevel> {
 }
 
 /** Write one level into the persisted cache (best-effort, size-guarded). */
-function writeDiskLevel(key: string, entries: RemoteFsEntry[]): void {
+function writeDiskLevel(key: string, level: DiskLevel): void {
   try {
     const doc: DiskCacheDoc = { levels: { ...readDiskCache() } }
     if (Object.keys(doc.levels).length >= DISK_CACHE_MAX_LEVELS) doc.levels = {}
-    doc.levels[key] = { at: Date.now(), entries }
+    doc.levels[key] = level
     localStorage.setItem(DISK_CACHE_KEY, JSON.stringify(doc))
   } catch {
     // Quota/JSON failure: the cache is best-effort, never fatal.
@@ -168,40 +174,22 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
 
   useEffect(() => { void refreshServers() }, [refreshServers])
 
-  /**
-   * Load one remote directory (root when path is undefined). Resolution:
-   * in-memory (instant) → persisted cache (instant; stale ones refresh in
-   * the background) → network with a loading row. `force` always hits the
-   * network but keeps whatever is displayed until the fresh listing lands.
-   * Returns the (possibly cached) listing, or undefined on failure.
-   */
-  const loadDir = useCallback(async (
+  /** One network round trip; stores (and persists) the result under BOTH
+   *  keys for a root fetch (bare serverId + the real path). */
+  const fetchRemote = useCallback(async (
     serverId: string,
     path: string | undefined,
-    opts?: { force?: boolean; prefetch?: boolean },
+    key: string,
   ): Promise<RemoteFsListing | undefined> => {
-    const key = path === undefined ? serverId : levelKey(serverId, path)
-    const force = opts?.force === true
-    const cur = dataRef.current[key]
-    if (cur?.entries !== undefined && !force) {
-      return { path: path ?? '', entries: cur.entries, truncated: false }
-    }
-    if (cur?.entries === undefined) {
-      const disk = force ? undefined : readDiskCache()[key]
-      if (disk !== undefined) {
-        storeLevel(key, { entries: disk.entries })
-        // A FRESH non-root cache hit short-circuits (no round trip).
-        if (Date.now() - disk.at < DISK_CACHE_TTL_MS && path !== undefined) {
-          return { path, entries: disk.entries, truncated: false }
-        }
-      } else {
-        storeLevel(key, { loading: true })
-      }
-    }
     try {
       const listing = await api.remoteFsTree(serverId, path)
-      storeLevel(key, { entries: listing.entries })
-      writeDiskLevel(key, listing.entries)
+      storeLevel(key, { path: listing.path, entries: listing.entries })
+      writeDiskLevel(key, { at: Date.now(), path: listing.path, entries: listing.entries })
+      if (path === undefined && listing.path !== '') {
+        const rootKey = levelKey(serverId, listing.path)
+        storeLevel(rootKey, { path: listing.path, entries: listing.entries })
+        writeDiskLevel(rootKey, { at: Date.now(), path: listing.path, entries: listing.entries })
+      }
       setConnections(prev => ({ ...prev, [serverId]: { status: 'connected', root: listing.path } }))
       return listing
     } catch (error: unknown) {
@@ -217,6 +205,45 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
       return undefined
     }
   }, [storeLevel])
+
+  /**
+   * Load one remote directory (root when path is undefined). Resolution:
+   * in-memory (instant) → persisted cache (instant; stale ones refresh in
+   * the background) → network with a loading row. `force` always hits the
+   * network but keeps whatever is displayed until the fresh listing lands.
+   * Returns the (possibly cached) listing with its REAL path, or undefined
+   * on failure.
+   */
+  const loadDir = useCallback(async (
+    serverId: string,
+    path: string | undefined,
+    opts?: { force?: boolean; prefetch?: boolean },
+  ): Promise<RemoteFsListing | undefined> => {
+    const key = path === undefined ? serverId : levelKey(serverId, path)
+    const force = opts?.force === true
+    const cur = dataRef.current[key]
+    if (cur?.entries !== undefined && !force) {
+      return { path: cur.path ?? path ?? '', entries: cur.entries, truncated: false }
+    }
+    if (cur?.entries === undefined) {
+      const disk = force ? undefined : readDiskCache()[key]
+      if (disk !== undefined && disk.path !== undefined) {
+        const fresh = Date.now() - disk.at < DISK_CACHE_TTL_MS
+        storeLevel(key, { path: disk.path, entries: disk.entries })
+        if (fresh) {
+          // The ROOT is served instantly from cache and revalidated in the
+          // background (so the connection state stays live); subdirectories
+          // are served without any round trip.
+          if (path === undefined) void fetchRemote(serverId, path, key)
+          return { path: disk.path, entries: disk.entries, truncated: false }
+        }
+        // Stale: the cached listing stays on screen while refreshing below.
+      } else {
+        storeLevel(key, { loading: true })
+      }
+    }
+    return fetchRemote(serverId, path, key)
+  }, [fetchRemote, storeLevel])
 
   /** Prefetch the first subfolders of a listing (background cache only). */
   const prefetch = useCallback((serverId: string, listing: RemoteFsListing): void => {
@@ -260,12 +287,6 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
     if (current === null) return
     jumpTo(segmentsOf(current).slice(0, -1))
   }, [current, jumpTo])
-
-  /** Back to the server list. */
-  const backToServers = useCallback((): void => {
-    setSelected(null)
-    setCurrent(null)
-  }, [])
 
   /** Refresh the CURRENT directory (and the server list) in place. */
   const refreshAll = useCallback((): void => {
@@ -350,15 +371,6 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
     const segments = segmentsOf(dir)
     return (
       <div className={css.remoteBreadcrumb}>
-        <button
-          type='button'
-          className={css.remoteCrumbButton}
-          title={t('remoteBack')}
-          aria-label={t('remoteBack')}
-          onClick={backToServers}
-        >
-          <IconChevronLeftOutline14 />
-        </button>
         <Menu
           open={serverMenuOpen}
           onClose={() => { setServerMenuOpen(false) }}
@@ -419,103 +431,85 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
     )
   }
 
-  /** The single-level directory listing. */
+  /** The single-level directory listing (right pane). */
   const renderDir = (dir: CurrentDir): ReactNode => {
     const key = levelKey(dir.serverId, dir.path)
     const level = data[key]
     const serverName = serverNameOf(dir.serverId)
+    let body: ReactNode
     if (level === undefined || level.loading === true) {
-      return <div className={css.explorerRow} style={{ paddingLeft: 12 }}>{t('loading')}</div>
-    }
-    if (level.error !== undefined) {
-      return <div className={clsx(css.explorerRow, css.explorerError)} style={{ paddingLeft: 12 }}>{level.error}</div>
-    }
-    const entries = level.entries ?? []
-    if (entries.length === 0) {
-      return <div className={css.explorerRow} style={{ paddingLeft: 12 }}>{t('remoteEmptyDir')}</div>
-    }
-    return entries.map(entry => {
-      if (entry.isDir) {
-        return (
-          <div
-            key={entry.path}
-            role='button'
-            tabIndex={0}
-            className={clsx(css.explorerRow, css.explorerDir, entry.hidden && css.explorerHidden)}
-            style={{ paddingLeft: 12 }}
-            onClick={() => { enterDir(dir.serverId, entry.path, dir.root) }}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); enterDir(dir.serverId, entry.path, dir.root) }
-            }}
-            onContextMenu={(event) => { openRowMenu(event, { serverId: dir.serverId, serverName, path: entry.path, isDir: true }) }}
-          >
-            <IconFolderClose16 size={14} />
-            <span className={css.explorerName}>{entry.name}</span>
-            <IconChevronRightOutline14 className={css.remoteEnterHint} />
-          </div>
-        )
+      body = <div className={css.explorerRow} style={{ paddingLeft: 12 }}>{t('loading')}</div>
+    } else if (level.error !== undefined) {
+      body = <div className={clsx(css.explorerRow, css.explorerError)} style={{ paddingLeft: 12 }}>{level.error}</div>
+    } else {
+      const entries = level.entries ?? []
+      if (entries.length === 0) {
+        body = <div className={css.explorerRow} style={{ paddingLeft: 12 }}>{t('remoteEmptyDir')}</div>
+      } else {
+        body = entries.map(entry => {
+          if (entry.isDir) {
+            return (
+              <div
+                key={entry.path}
+                role='button'
+                tabIndex={0}
+                className={clsx(css.explorerRow, css.explorerDir, entry.hidden && css.explorerHidden)}
+                style={{ paddingLeft: 12 }}
+                onClick={() => { enterDir(dir.serverId, entry.path, dir.root) }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); enterDir(dir.serverId, entry.path, dir.root) }
+                }}
+                onContextMenu={(event) => { openRowMenu(event, { serverId: dir.serverId, serverName, path: entry.path, isDir: true }) }}
+              >
+                <IconFolderClose16 size={14} />
+                <span className={css.explorerName}>{entry.name}</span>
+                <IconChevronRightOutline14 className={css.remoteEnterHint} />
+              </div>
+            )
+          }
+          return (
+            <div
+              key={entry.path}
+              role='button'
+              tabIndex={0}
+              className={clsx(css.explorerRow, entry.hidden && css.explorerHidden)}
+              style={{ paddingLeft: 12 }}
+              title={entry.path + (entry.size > 0 ? ' · ' + formatSize(entry.size) : '')}
+              onClick={() => { openFile(dir.serverId, serverName, entry.path) }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openFile(dir.serverId, serverName, entry.path) }
+              }}
+              onContextMenu={(event) => { openRowMenu(event, { serverId: dir.serverId, serverName, path: entry.path, isDir: false }) }}
+            >
+              <IconCodeOutline16 size={14} />
+              <span className={css.explorerName}>{entry.name}</span>
+            </div>
+          )
+        })
       }
-      return (
-        <div
-          key={entry.path}
-          role='button'
-          tabIndex={0}
-          className={clsx(css.explorerRow, entry.hidden && css.explorerHidden)}
-          style={{ paddingLeft: 12 }}
-          title={entry.path + (entry.size > 0 ? ' · ' + formatSize(entry.size) : '')}
-          onClick={() => { openFile(dir.serverId, serverName, entry.path) }}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openFile(dir.serverId, serverName, entry.path) }
-          }}
-          onContextMenu={(event) => { openRowMenu(event, { serverId: dir.serverId, serverName, path: entry.path, isDir: false }) }}
-        >
-          <IconCodeOutline16 size={14} />
-          <span className={css.explorerName}>{entry.name}</span>
-        </div>
-      )
-    })
+    }
+    return <div className={css.remoteDirList}>{body}</div>
   }
 
+  /** One compact server row in the LEFT pane. */
   const renderServer = (server: RemoteServerSafe): ReactNode => {
     const conn = connections[server.id] ?? { status: 'idle' }
     const isSelected = selected === server.id
-    const isCurrent = current?.serverId === server.id
     return (
-      <div key={server.id} className={css.remoteServer}>
-        <div
-          role='button'
-          tabIndex={0}
-          className={clsx(css.remoteServerRow, isSelected && css.remoteServerSelected)}
-          onClick={() => { selectServer(server) }}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectServer(server) }
-          }}
-          onContextMenu={(event) => { openRowMenu(event, { serverId: server.id, serverName: server.name, path: conn.root ?? '', isDir: true }) }}
-        >
-          <span className={clsx(css.remoteStatus, css['remoteStatus' + conn.status.charAt(0).toUpperCase() + conn.status.slice(1)])} />
-          <IconFolderClose16 size={14} />
-          <span className={css.explorerName}>{server.name}</span>
-          <span className={css.remoteServerHost}>{server.username + '@' + server.host}</span>
-          <button
-            type='button'
-            className={css.iconButton}
-            title={t('remoteEditServer')}
-            onClick={(event) => { event.stopPropagation(); setFormServer(server) }}
-          >
-            <IconServerOutline16 size={14} />
-          </button>
-        </div>
-        {conn.status === 'error' && conn.error !== undefined && (
-          <div className={clsx(css.explorerRow, css.explorerError)} style={{ paddingLeft: 22 }}>
-            {t('remoteConnectFailed') + ': ' + conn.error}
-          </div>
-        )}
-        {isCurrent && current !== null && (
-          <>
-            {renderBreadcrumb(current)}
-            {renderDir(current)}
-          </>
-        )}
+      <div
+        key={server.id}
+        role='button'
+        tabIndex={0}
+        className={clsx(css.remoteServerRow, isSelected && css.remoteServerSelected)}
+        onClick={() => { selectServer(server) }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectServer(server) }
+        }}
+        onContextMenu={(event) => { openRowMenu(event, { serverId: server.id, serverName: server.name, path: conn.root ?? '', isDir: true }) }}
+      >
+        <span className={clsx(css.remoteStatus, css['remoteStatus' + conn.status.charAt(0).toUpperCase() + conn.status.slice(1)])} />
+        <span className={css.explorerName}>{server.name}</span>
+        <span className={css.remoteServerHost}>{server.username + '@' + server.host}</span>
       </div>
     )
   }
@@ -554,7 +548,23 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
             </button>
           </div>
         )}
-        {servers !== null && servers.map(renderServer)}
+        {servers !== null && servers.length > 0 && (
+          <>
+            <div className={css.remoteServerList}>
+              {servers.map(renderServer)}
+            </div>
+            <div className={css.remoteDirPane}>
+              {current === null ? (
+                <div className={css.remoteDirEmpty}>{t('remoteSelectServer')}</div>
+              ) : (
+                <>
+                  {renderBreadcrumb(current)}
+                  {renderDir(current)}
+                </>
+              )}
+            </div>
+          </>
+        )}
       </div>
       <Menu
         open={rowMenu !== null}
@@ -567,11 +577,19 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
           { id: 'delete', label: t('delete'), icon: <IconTrashOutline16 size={14} />, danger: true },
           { type: 'separator' as const, id: 'sep' },
           { id: 'copy', label: t('copyAbsolute'), icon: <IconCopyOutline16 size={14} /> },
+          ...(rowMenu?.path === '' || rowMenu?.path === undefined
+            ? [{ type: 'separator' as const, id: 'sep2' }, { id: 'edit-server', label: t('remoteEditServer'), icon: <IconServerOutline16 size={14} /> }]
+            : []),
         ]}
         onSelect={(id) => {
           const target = rowMenu
           if (target === null) return
           setRowMenu(null)
+          if (id === 'edit-server') {
+            const server = servers?.find(s => s.id === target.serverId)
+            if (server !== undefined) setFormServer(server)
+            return
+          }
           if (id === 'session') {
             startSession(target.serverId, target.serverName, target.path)
             return
