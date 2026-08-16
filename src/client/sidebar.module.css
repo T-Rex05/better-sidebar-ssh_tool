@@ -928,6 +928,33 @@
   flex: 1;
 }
 
+/* The explicit "up one level" control: a text button (the chevron alone
+   was too easy to miss), disabled at the server root. */
+.remoteUpButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 5px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxs-12);
+  cursor: pointer;
+  flex: none;
+}
+
+.remoteUpButton:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.remoteUpButton:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* The up-one-level glyph: a left chevron rotated to point up. */
 .remoteUpIcon {
   transform: rotate(90deg);
@@ -2110,6 +2137,7 @@
 .remoteAddButton:focus-visible,
 .remoteCrumbButton:focus-visible,
 .remoteCrumbServer:focus-visible,
+.remoteUpButton:focus-visible,
 .remoteAuthSelect:focus-visible,
 .remoteCenterButton:focus-visible,
 .remoteDockAction:focus-visible,

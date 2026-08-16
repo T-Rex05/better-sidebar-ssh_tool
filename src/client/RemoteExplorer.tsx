@@ -163,24 +163,28 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
    * Load one remote level (root when path is undefined). Resolution order:
    * in-memory data (instant) → persisted cache (instant; background refresh
    * when stale) → network with a loading row. `force` always hits the
-   * network; `prefetch` disables the recursive prefetch (one level only).
+   * network but KEEPS whatever is currently displayed until the fresh
+   * listing lands (no loading flash — the tree never flickers on refresh);
+   * `prefetch` disables the recursive prefetch (one level only).
    */
   const loadLevel = useCallback((serverId: string, path: string | undefined, opts?: { force?: boolean; prefetch?: boolean }): void => {
     const key = levelKey(serverId, path)
+    const force = opts?.force === true
     const current = dataRef.current[key]
-    if (current !== undefined && current.entries !== undefined && opts?.force !== true) return
-    if (current === undefined || opts?.force === true) {
-      const disk = readDiskCache()[key]
-      if (disk !== undefined && opts?.force !== true) {
-        // Render the cached listing immediately; refresh in the background
-        // when it is stale (or always refresh the ROOT so a reconnect sees
-        // the live tree — cheap, one round trip).
+    if (current !== undefined && current.entries !== undefined && !force) return
+    if (current?.entries === undefined) {
+      // Nothing displayed yet: serve the persisted cache instantly (and
+      // refresh in the background when stale — the ROOT always refreshes
+      // so a reconnect sees the live tree), otherwise show a loading row.
+      const disk = force ? undefined : readDiskCache()[key]
+      if (disk !== undefined) {
         storeLevel(key, { entries: disk.entries })
         if (Date.now() - disk.at < DISK_CACHE_TTL_MS && path !== undefined) return
       } else {
         storeLevel(key, { loading: true })
       }
     }
+    // A forced refresh with content on screen keeps it until the fetch lands.
     void fetchLevel(serverId, path, key, opts)
   }, [storeLevel])
 
@@ -209,7 +213,12 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
         for (const dir of dirs) loadLevel(serverId, dir.path, { prefetch: true })
       }
     } catch (error: unknown) {
-      storeLevel(key, { error: error instanceof Error ? error.message : String(error) })
+      // A refresh failure keeps the displayed listing (silent — the user
+      // can refresh again); a FIRST load failure shows the error row.
+      const existing = dataRef.current[key]
+      if (existing?.entries === undefined) {
+        storeLevel(key, { error: error instanceof Error ? error.message : String(error) })
+      }
       setConnections(prev => ({
         ...prev,
         [serverId]: { status: 'error', error: error instanceof Error ? error.message : String(error) },
@@ -299,9 +308,10 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
   }, [jumpTo])
 
   const refreshAll = useCallback((): void => {
-    dataRef.current = {}
-    setData({})
     void refreshServers()
+    // Refresh every expanded level IN PLACE: the current listings stay on
+    // screen until each fetch lands (loadLevel keeps displayed content on
+    // forced refreshes), so the tree never collapses into loading rows.
     const snapshot = store.getSnapshot().state
     for (const key of snapshot?.remoteExpanded ?? []) {
       const at = key.indexOf('|')
@@ -448,13 +458,13 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
         <span className={css.remoteCrumbSpacer} />
         <button
           type='button'
-          className={css.remoteCrumbButton}
+          className={css.remoteUpButton}
           title={t('remoteUp')}
-          aria-label={t('remoteUp')}
           disabled={segments.length === 0}
           onClick={() => { upOne(server.id, segments, root) }}
         >
           <IconChevronLeftOutline14 className={css.remoteUpIcon} />
+          <span>{t('remoteUp')}</span>
         </button>
       </div>
     )
