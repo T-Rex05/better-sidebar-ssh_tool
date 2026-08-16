@@ -16,7 +16,7 @@
  * BOTH by the bare serverId (the connect response arrives keyless) and by
  * its real path, so the directory pane always finds its data.
  */
-import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type DragEvent, type MouseEvent, type ReactNode } from 'react'
 import clsx from 'clsx'
 import {
   IconCheckOutline16, IconChevronDownOutline14, IconChevronLeftOutline14, IconChevronRightOutline14, IconCodeOutline16,
@@ -36,6 +36,19 @@ import css from './sidebar.module.css'
 const PREFETCH_DIRS = 8
 /** Folders beyond this count skip prefetching (big listings). */
 const PREFETCH_PARENT_MAX = 80
+
+/** Drag & drop upload cap (bytes); larger files are skipped with a note. */
+const UPLOAD_MAX_BYTES = 100 * 1024 * 1024
+
+/** Encode raw bytes as base64 without a stack overflow on large files. */
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  const CHUNK = 0x8000
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
+  }
+  return btoa(binary)
+}
 
 /** localStorage cache of loaded levels (key → entries + timestamp). */
 const DISK_CACHE_KEY = 'dsh-sidebar-remote-cache:v1'
@@ -158,6 +171,9 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
   const [deletingBusy, setDeletingBusy] = useState(false)
   const [formServer, setFormServer] = useState<RemoteServerSafe | 'new' | null>(null)
   const [importNote, setImportNote] = useState<string | null>(null)
+  const [uploadBusy, setUploadBusy] = useState(false)
+  const [uploadNote, setUploadNote] = useState<string | null>(null)
+  const [dragOver, setDragOver] = useState(false)
 
   const storeLevel = useCallback((key: string, level: LevelData) => {
     dataRef.current = { ...dataRef.current, [key]: level }
@@ -315,6 +331,36 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
       setImportNote(error instanceof Error ? error.message : String(error))
     }
   }, [refreshServers])
+
+  /** Drag & drop upload: files land in the CURRENT directory (base64 wire). */
+  const handleDrop = useCallback(async (event: DragEvent<HTMLDivElement>): Promise<void> => {
+    event.preventDefault()
+    setDragOver(false)
+    if (current === null || uploadBusy) return
+    const files = [...(event.dataTransfer?.files ?? [])]
+    if (files.length === 0) return
+    setUploadBusy(true)
+    setUploadNote(null)
+    let done = 0
+    try {
+      for (const file of files) {
+        if (file.size > UPLOAD_MAX_BYTES) {
+          setUploadNote(t('remoteUploadTooBig', { name: file.name }))
+          continue
+        }
+        const bytes = new Uint8Array(await file.arrayBuffer())
+        const target = current.path.replace(/\/+$/, '') + '/' + file.name
+        await api.remoteFsWrite(current.serverId, target, bytesToBase64(bytes), 'base64')
+        done += 1
+      }
+      setUploadNote(t('remoteUploadDone', { n: done }))
+      void loadDir(current.serverId, current.path, { force: true })
+    } catch (error) {
+      setUploadNote(error instanceof Error ? error.message : String(error))
+    } finally {
+      setUploadBusy(false)
+    }
+  }, [current, uploadBusy, loadDir])
 
   /** Open a remote file in the shared editor (tab.meta.remote routes IO). */
   const openFile = useCallback((serverId: string, serverName: string, path: string): void => {
@@ -517,7 +563,19 @@ export function RemoteExplorer(props: { ctx: Context; store: SidebarStore; scope
         })
       }
     }
-    return <div className={css.remoteDirList}>{body}</div>
+    return (
+      <div
+        className={clsx(css.remoteDirList, dragOver && css.remoteDirDragOver)}
+        onDragOver={(event) => { event.preventDefault(); setDragOver(true) }}
+        onDragLeave={() => { setDragOver(false) }}
+        onDrop={(event) => { void handleDrop(event) }}
+      >
+        {(uploadBusy || uploadNote !== null) && (
+          <div className={css.remoteImportNote}>{uploadBusy ? t('remoteUploading') : uploadNote}</div>
+        )}
+        {body}
+      </div>
+    )
   }
 
   /** The "pick a server" entry shown before a server is selected. */

@@ -524,6 +524,17 @@ describe('SFTP pool', () => {
     expect(writes).toContain('content')
   })
 
+  it('writes raw bytes verbatim (base64 uploads arrive as Buffers)', async () => {
+    const p = pool()
+    p.syncServers([server()])
+    // Bytes that survive a utf8 round-trip (the fake records via toString).
+    const bytes = Buffer.from([0x00, 0x01, 0x41, 0x42])
+    await p.writeFile('srv-1', '/bin.dat', bytes)
+    const write = sftp().calls.find(c => c.method === 'write')
+    // The pool passes the Buffer through untouched (no Buffer.from(Buffer)).
+    expect(Buffer.from(write!.args[0] as string, 'utf8')).toEqual(bytes)
+  })
+
   it('rejects an invalid rename target name', async () => {
     const p = pool()
     p.syncServers([server()])

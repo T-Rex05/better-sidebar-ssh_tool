@@ -96,6 +96,13 @@ export function TerminalView(props: {
   const [fatal, setFatal] = useState<string | null>(null)
   const [lastUrl, setLastUrl] = useState<string | null>(null)
   const connectRef = useRef<(() => void) | null>(null)
+  // The latest wsUrl builder via a ref: the remote view passes an inline
+  // function, and a NEW function identity on every parent render must NOT
+  // rebuild the terminal (that was the "keeps refreshing" bug — the effect
+  // depended on props.wsUrl and re-ran on each render). The effect reads the
+  // ref, so the terminal is created exactly once per mount.
+  const wsUrlRef = useRef<(() => string) | undefined>(undefined)
+  wsUrlRef.current = props.wsUrl
 
   useEffect(() => {
     const host = hostRef.current
@@ -127,7 +134,8 @@ export function TerminalView(props: {
     let failures = 0
 
     const wsUrl = (): string => {
-      if (props.wsUrl !== undefined) return props.wsUrl()
+      const override = wsUrlRef.current
+      if (override !== undefined) return override()
       const url = new URL('/sidebar/ws/terminal', location.origin)
       url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
       // Agent terminals attach by uuid (the host looks them up in the agent
@@ -273,7 +281,7 @@ export function TerminalView(props: {
       term.dispose()
       connectRef.current = null
     }
-  }, [scope.sessionId, scope.cwd, tabId, store, props.wsUrl, props.attachKey])
+  }, [scope.sessionId, scope.cwd, tabId, store, props.attachKey])
 
   return (
     <div className={css.terminalWrap}>

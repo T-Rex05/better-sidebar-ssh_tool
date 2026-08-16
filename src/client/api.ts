@@ -267,9 +267,10 @@ export const api = {
   /** Read one remote file (capped; binaries carry head bytes for sniffing). */
   remoteFsRead: (serverId: string, path: string, signal?: AbortSignal) =>
     call<RemoteFileRead>('remote.fs.read', { serverId, path }, signal),
-  /** Write one remote file (temp + rename on the server). */
-  remoteFsWrite: (serverId: string, path: string, content: string) =>
-    call<{ ok: true }>('remote.fs.write', { serverId, path, content }),
+  /** Write one remote file (temp + rename on the server; `encoding:
+   *  'base64'` for binary uploads). */
+  remoteFsWrite: (serverId: string, path: string, content: string, encoding?: 'base64') =>
+    call<{ ok: true }>('remote.fs.write', { serverId, path, content, ...(encoding !== undefined ? { encoding } : {}) }),
   /** Rename one remote entry (same directory; name without slashes). */
   remoteFsRename: (serverId: string, path: string, name: string) =>
     call<{ ok: true }>('remote.fs.rename', { serverId, path, name }),

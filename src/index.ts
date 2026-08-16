@@ -482,8 +482,12 @@ function buildApi(
       const serverId = requireString(payload, 'serverId')
       const path = requireString(payload, 'path')
       const content = requireString(payload, 'content')
+      // Uploads arrive as base64 (drag & drop of binary files); editor
+      // saves stay plain UTF-8 text.
+      const rawEncoding = (payload as Record<string, unknown>).encoding
+      const data = rawEncoding === 'base64' ? Buffer.from(content, 'base64') : content
       if (!path.startsWith('/')) throw new SidebarError('bad-request', 'remote path must be an absolute POSIX path', 400)
-      await sftpPool.writeFile(serverId, path, content)
+      await sftpPool.writeFile(serverId, path, data)
       return { ok: true }
     },
     'remote.fs.rename': async (payload) => {

@@ -6,7 +6,7 @@
  * re-downloading.
  */
 import { describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -85,6 +85,10 @@ describe('/sidebar/bundle route', () => {
       const first = fakeRes()
       await handler(req('GET', '/sidebar/bundle/editor.js'), first as unknown as ServerResponse)
       writeFileSync(join(dir, 'client-editor.js'), 'window.__ModuleLoader__ && 1;')
+      // Force the mtime forward: the ETag memo re-hashes on mtime/size
+      // change, and a same-millisecond write may not bump the stat mtime.
+      const future = Date.now() + 2000
+      utimesSync(join(dir, 'client-editor.js'), future / 1000, future / 1000)
       const second = fakeRes()
       await handler(req('GET', '/sidebar/bundle/editor.js', { 'if-none-match': first.headers.etag! }), second as unknown as ServerResponse)
       expect(second.status).toBe(200)

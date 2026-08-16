@@ -259,6 +259,9 @@ export const zh = {
   remoteSelectServer: '选择服务器',
   remoteImportConfig: '从 OpenSSH config 导入',
   remoteImportResult: '已导入 {n} 个服务器，跳过 {m} 个（重名、ProxyJump 或无 IdentityFile）',
+  remoteUploading: '上传中…',
+  remoteUploadDone: '已上传 {n} 个文件',
+  remoteUploadTooBig: '「{name}」超过 100MB，已跳过',
   pluginSentinelDesc: '条件驱动的 agent 唤醒系统：文件/进程/端口/HTTP/命令/webhook 传感器，条件达成自动唤醒休眠会话；注册「哨兵」Tab 展示服务器全局监控表',
 }
 
@@ -512,6 +515,9 @@ export const en: Record<keyof typeof zh, string> = {
   remoteSelectServer: 'Select a server',
   remoteImportConfig: 'Import from OpenSSH config',
   remoteImportResult: 'Imported {n} server(s), skipped {m} (duplicates, ProxyJump or no IdentityFile)',
+  remoteUploading: 'Uploading…',
+  remoteUploadDone: 'Uploaded {n} file(s)',
+  remoteUploadTooBig: '"{name}" exceeds 100MB, skipped',
   pluginSentinelDesc: 'Condition-driven agent wakeup: file/process/port/http/command/webhook sensors wake dormant sessions when conditions fire; registers a "Sentinel" tab with the server-wide watch table',
 }
 

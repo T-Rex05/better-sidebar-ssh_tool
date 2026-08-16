@@ -371,18 +371,20 @@ export class SftpPool {
     })
   }
 
-  /** Atomic write: temp file in the same directory + rename. */
-  async writeFile(serverId: string, path: string, content: string): Promise<void> {
+  /** Atomic write: temp file in the same directory + rename. Accepts raw
+   *  text or pre-encoded bytes (base64 uploads arrive as Buffers). */
+  async writeFile(serverId: string, path: string, content: string | Buffer): Promise<void> {
     return this.withSftp(serverId, async (sftp) => {
+      const data = typeof content === 'string' ? Buffer.from(content, 'utf8') : content
       const tmp = path + '.dsh-sidebar-tmp-' + Date.now()
       try {
-        await writeAll(sftp, tmp, Buffer.from(content, 'utf8'))
+        await writeAll(sftp, tmp, data)
         try {
           await renameOf(sftp, tmp, path)
         } catch (error) {
           // Some servers refuse rename onto an existing file's odd modes;
           // a direct overwrite is the fallback (still same-directory-safe).
-          await writeAll(sftp, path, Buffer.from(content, 'utf8'))
+          await writeAll(sftp, path, data)
           await unlinkOf(sftp, tmp).catch(() => {})
         }
       } catch (error) {
